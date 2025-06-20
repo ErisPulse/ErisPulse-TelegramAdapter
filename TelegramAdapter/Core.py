@@ -15,7 +15,7 @@ class Main:
         }
 
 class TelegramAdapter(sdk.BaseAdapter):
-    class Send(sdk.SendDSL):
+    class Send(super().Send):
         def Text(self, text: str, parse_mode: str = "markdown"):
             return asyncio.create_task(
                 self._adapter.call_api(
