@@ -4,16 +4,6 @@ import json
 from typing import Dict, List, Optional, Any
 from ErisPulse import sdk
 
-class Main:
-    def __init__(self, sdk):
-        self.sdk = sdk
-        self.logger = sdk.logger
-
-    def register_adapters(self):
-        return {
-            "telegram": TelegramAdapter
-        }
-
 class TelegramAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
         def Text(self, text: str, parse_mode: str = "markdown"):
@@ -176,39 +166,38 @@ class TelegramAdapter(sdk.BaseAdapter):
         self._setup_event_mapping()
 
     def _load_config(self):
-        config = self.sdk.env.get("TelegramAdapter", {})
+        config = self.sdk.env.getConfig("Telegram_Adapter")
         if not config:
-            self.logger.warning("""
-                Telegram配置缺失，请在env.py中添加完整配置示例:
-                sdk.env.set("TelegramAdapter", {
-                    # 必填：Telegram Bot Token
-                    "token": "YOUR_BOT_TOKEN",
-
-                    # Webhook 模式下的服务配置（如使用 webhook）
-                    "server": {
-                        "host": "127.0.0.1",            # 推荐监听本地，防止外网直连
-                        "port": 8443,                   # 监听端口
-                        "path": "/telegram/webhook"     # Webhook 路径
-                    },
-                    "webhook": {
-                        "host": "example.com",          # Telegram API 监听地址（外部地址）
-                        "port": 8443,                   # 监听端口
-                        "path": "/telegram/webhook"     # Webhook 路径
-                    }
-
-                    # 启动模式: webhook 或 polling
-                    "mode": "webhook",
-
-                    # 可选：代理配置（用于连接 Telegram API）
-                    "proxy": {
-                        "host": "127.0.0.1",
-                        "port": 1080,
-                        "type": "socks5"  # 支持 socks4 / socks5
-                    }
-                })
-
-                ⚠️ 注意：如果你使用反向代理（如 Nginx/Caddy）处理 HTTPS，不需要填写 cert_path。
-            """)
+            default_config = {
+                # 必填：Telegram Bot Token
+                "token": "YOUR_BOT_TOKEN",
+                # Webhook 模式下的服务配置（如使用 webhook）
+                "server": {
+                    "host": "127.0.0.1",            # 推荐监听本地，防止外网直连
+                    "port": 8443,                   # 监听端口
+                    "path": "/telegram/webhook"     # Webhook 路径
+                },
+                "webhook": {
+                    "host": "example.com",          # Telegram API 监听地址（外部地址）
+                    "port": 8443,                   # 监听端口
+                    "path": "/telegram/webhook"     # Webhook 路径
+                },
+                # 启动模式: webhook 或 polling
+                "mode": "polling",
+                # 可选：代理配置（用于连接 Telegram API）
+                "proxy": {
+                    "host": "127.0.0.1",
+                    "port": 1080,
+                    "type": "socks5"  # 支持 socks4 / socks5
+                }
+            }
+            try:
+                sdk.logger.warning("电报(Telegram)适配器配置不存在，已自动创建默认配置")
+                self.sdk.env.setConfig("Telegram_Adapter", default_config)
+                return default_config
+            except Exception as e:
+                self.logger.error(f"保存默认配置失败: {str(e)}")
+                return default_config
         return config
 
     def _setup_event_mapping(self):

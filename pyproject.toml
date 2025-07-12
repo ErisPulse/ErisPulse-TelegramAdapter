@@ -1,0 +1,20 @@
+[project]
+name = "ErisPulse-TelegramAdapter"
+version = "3.0.0"
+description = "ErisPulse的云湖协议适配模块"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [ { name = "wsu2059", email = "wsu2059@qq.com" } ]
+dependencies = [
+    "aiohttp", 
+    "aiohttp-socks", 
+    "certifi"
+]
+
+[project.urls]
+"homepage" = "https://github.com/ErisPulse/ErisPulse-TelegramAdapter"
+
+[project.entry-points."erispulse.adapter"]
+telegram = "TelegramAdapter:TelegramAdapter"
+tg = "TelegramAdapter:TelegramAdapter"
