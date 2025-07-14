@@ -194,10 +194,11 @@ class TelegramAdapter(sdk.BaseAdapter):
                     await self.emit(mapped_type, data)
                     
                     # 转换为OneBot12事件并提交
-                    onebot_event = self.convert(data)
-                    if onebot_event:
-                        onebot_event["platform"] = "telegram"
-                        await self.emit_onebot12(mapped_type, onebot_event)
+                    if hasattr(self.adapter, "emit"):
+                        onebot_event = self.convert(data)
+                        self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
+                        if onebot_event:
+                            await self.adapter.emit(onebot_event)
                     
                     break
 
