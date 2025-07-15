@@ -77,6 +77,7 @@ class TelegramConverter:
             "message": message_segments,
             "alt_message": alt_message,
             "user_id": str(message["from"]["id"]),
+            "user_nickname": f"{message['from'].get('first_name', '')} {message['from'].get('last_name', '')}".strip(),
             "telegram_chat": message["chat"]
         })
 
@@ -202,6 +203,7 @@ class TelegramConverter:
             "type": "notice",
             "detail_type": "telegram_callback_query",
             "user_id": str(callback["from"]["id"]),
+            "user_nickname": f"{callback['from'].get('first_name', '')} {callback['from'].get('last_name', '')}".strip(),
             "telegram_callback_data": {
                 "id": callback["id"],
                 "data": callback.get("data"),
@@ -223,6 +225,7 @@ class TelegramConverter:
             "type": "notice",
             "detail_type": "telegram_inline_query",
             "user_id": str(inline_query["from"]["id"]),
+            "user_nickname": f"{inline_query['from'].get('first_name', '')} {inline_query['from'].get('last_name', '')}".strip(),
             "telegram_inline_query": {
                 "id": inline_query["id"],
                 "query": inline_query["query"],
@@ -237,6 +240,7 @@ class TelegramConverter:
             "type": "notice",
             "detail_type": "telegram_chosen_inline_result",
             "user_id": str(result["from"]["id"]),
+            "user_nickname": f"{result['from'].get('first_name', '')} {result['from'].get('last_name', '')}".strip(),
             "telegram_inline_result": {
                 "result_id": result["result_id"],
                 "query": result["query"],
@@ -267,9 +271,9 @@ class TelegramConverter:
             "type": "notice",
             "detail_type": "telegram_poll_answer",
             "user_id": str(answer["user"]["id"]),
+            "user_nickname": f"{answer['user'].get('first_name', '')} {answer['user'].get('last_name', '')}".strip(),
             "telegram_poll_answer": {
                 "poll_id": answer["poll_id"],
                 "option_ids": answer["option_ids"]
             }
         })
-        return base_event
