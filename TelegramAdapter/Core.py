@@ -286,8 +286,37 @@ class TelegramAdapter(sdk.BaseAdapter):
 
     async def call_api(self, endpoint: str, **params):
         url = f"{self.base_url}/{endpoint}"
-        async with self.session.post(url, json=params) as response:
-            return await response.json()
+        try:
+            async with self.session.post(url, json=params) as response:
+                raw_response = await response.json()
+                
+                # 构建标准化响应
+                response_data = {
+                    "status": "ok" if raw_response.get("ok") else "failed",
+                    "retcode": 0 if raw_response.get("ok") else 34000,  # 34xxx 平台错误
+                    "data": raw_response.get("result"),
+                    "message_id": str(raw_response.get("result", {}).get("message_id", "")) if raw_response.get("ok") else "",
+                    "message": "" if raw_response.get("ok") else raw_response.get("description", "Unknown Telegram API error"),
+                    "telegram_raw": raw_response
+                }
+                
+                # 处理echo字段
+                if "echo" in params:
+                    response_data["echo"] = params["echo"]
+                    
+                return response_data
+                
+        except Exception as e:
+            self.logger.error(f"调用Telegram API失败: {str(e)}")
+            return {
+                "status": "failed",
+                "retcode": 33001,  # 网络错误
+                "data": None,
+                "message_id": "",
+                "message": f"API调用失败: {str(e)}",
+                "telegram_raw": None,
+                "echo": params.get("echo", "")
+            }
 
     async def start(self):
         import ssl
