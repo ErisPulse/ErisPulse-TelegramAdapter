@@ -226,8 +226,8 @@ class TelegramAdapter(sdk.BaseAdapter):
         webhook_config = self.config.get("webhook", {})
         path = webhook_config.get("path", "/telegram/webhook")
         
-        # 获取服务器配置
-        server_config = self.sdk.env.getConfig("Server", {})
+        # 获取服务器配置 兼容性处理
+        server_config = self.sdk.env.getConfig("ErisPulse", {}).get("server") or self.sdk.getConfig("Server", {})
         
         # 优先使用webhook配置中的域名，其次使用server配置中的host
         domain = webhook_config.get("domain") or server_config.get("host", "localhost")
