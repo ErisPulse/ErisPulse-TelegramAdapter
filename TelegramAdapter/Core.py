@@ -132,7 +132,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         self._setup_event_mapping()
         self._proxy_enabled = self.config.get("proxy_enabled", False)
         self._proxy_config = self.config.get("proxy", {}) if self._proxy_enabled else None
-        self.convert = TelegramConverter().convert  # 初始化转换器
+        self.convert = TelegramConverter(self.token).convert  # 初始化转换器
 
     def _load_config(self):
         config = self.sdk.env.getConfig("Telegram_Adapter")
