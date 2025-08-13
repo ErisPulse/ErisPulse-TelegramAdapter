@@ -253,14 +253,23 @@ class TelegramAdapter(sdk.BaseAdapter):
         offset = 0
         while True:
             try:
-                updates = await self.call_api(
+                response = await self.call_api(
                     "getUpdates",
                     offset=offset,
                     timeout=60
                 )
                 
-                if updates.get("result"):
-                    for update in updates["result"]:
+                # 检查API调用是否成功
+                if response.get("status") != "ok":
+                    self.logger.error(f"获取更新失败: {response.get('message')}")
+                    await asyncio.sleep(5)
+                    continue
+                    
+                # 从标准化响应中提取result
+                updates = response.get("data")
+                
+                if updates:
+                    for update in updates:
                         update_id = update["update_id"]
                         if update_id >= offset:
                             offset = update_id + 1
@@ -273,29 +282,45 @@ class TelegramAdapter(sdk.BaseAdapter):
                                 await self.emit(mapped_type, update)
                                 
                                 # 转换为OneBot12事件并提交
-                                if hasattr(self.adapter, "emit"):
+                                if hasattr(self.sdk, "adapter"):
                                     onebot_event = self.convert(update)
                                     self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
                                     if onebot_event:
-                                        await self.adapter.emit(onebot_event)
+                                        await self.sdk.adapter.emit(onebot_event)
                                 
                                 break
+                await asyncio.sleep(1)  # 避免过于频繁的请求
             except Exception as e:
                 self.logger.error(f"轮询更新失败: {e}")
                 await asyncio.sleep(5)
-
     async def call_api(self, endpoint: str, **params):
         url = f"{self.base_url}/{endpoint}"
         try:
             async with self.session.post(url, json=params) as response:
                 raw_response = await response.json()
                 
+                self.logger.debug(f"Telegram API请求: {url}")
+                self.logger.debug(f"Telegram API响应: {raw_response}")
+                
+                # 检查响应是否为预期的字典格式
+                if not isinstance(raw_response, dict):
+                    self.logger.error(f"Telegram API 返回了意外的响应格式: {type(raw_response)}, 内容: {raw_response}")
+                    return {
+                        "status": "failed",
+                        "retcode": 34000,
+                        "data": None,
+                        "message_id": "",
+                        "message": f"API 返回了意外格式: {type(raw_response)}",
+                        "telegram_raw": raw_response,
+                        "echo": params.get("echo", "")
+                    }
+                
                 # 构建标准化响应
                 response_data = {
                     "status": "ok" if raw_response.get("ok") else "failed",
                     "retcode": 0 if raw_response.get("ok") else 34000,  # 34xxx 平台错误
                     "data": raw_response.get("result"),
-                    "message_id": str(raw_response.get("result", {}).get("message_id", "")) if raw_response.get("ok") else "",
+                    "message_id": str(raw_response.get("result", {}).get("message_id", "") if isinstance(raw_response.get("result"), dict) else ""),
                     "message": "" if raw_response.get("ok") else raw_response.get("description", "Unknown Telegram API error"),
                     "telegram_raw": raw_response
                 }
@@ -317,7 +342,7 @@ class TelegramAdapter(sdk.BaseAdapter):
                 "telegram_raw": None,
                 "echo": params.get("echo", "")
             }
-
+        
     async def start(self):
         import ssl
         import certifi
@@ -345,11 +370,10 @@ class TelegramAdapter(sdk.BaseAdapter):
             if self._proxy_enabled:
                 self.logger.warning("代理已启用但未配置，将不使用代理")
 
-        # 注册webhook路由
-        await self.register_webhook()
-
         # 根据模式启动
         if self.config.get("mode") == "webhook":
+            # 注册webhook路由
+            await self.register_webhook()
             await self.set_webhook()
         elif self.config.get("mode") == "polling":
             self.poll_task = asyncio.create_task(self._poll_updates())
