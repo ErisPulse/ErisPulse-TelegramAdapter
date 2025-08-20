@@ -12,10 +12,13 @@ from ErisPulse import sdk
 async def main():
     # 初始化 SDK
     sdk.init()
-
+    
+    # 启动适配器
+    await sdk.adapter.startup()
+    
     # 获取适配器实例
-    telegram = sdk.adapter.telegram
-
+    telegram = sdk.adapter.get("telegram")
+    
     # 注册事件处理器
     @telegram.on("message")
     async def handle_message(data):
@@ -27,9 +30,6 @@ async def main():
         print(f"收到回调查询: {data}")
         await telegram.answer_callback_query(data["id"], "处理完成")
 
-    # 启动适配器
-    await sdk.adapter.startup()
-
     # 保持程序运行
     await asyncio.Event().wait()
 
@@ -40,45 +40,60 @@ if __name__ == "__main__":
 
 ### 消息发送示例
 ```python
-# 发送文本消息
+# 发送纯文本消息
 await telegram.Send.To("user", "123456789").Text("Hello World!")
+
+# 发送Markdown格式消息
+await telegram.Send.To("user", "123456789").Markdown("*粗体文本*")
+
+# 发送HTML格式消息
+await telegram.Send.To("user", "123456789").Html("<b>粗体文本</b>")
 
 # 发送图片（需先读取为 bytes）
 with open("image.jpg", "rb") as f:
-    await telegram.Send.To("user", "123456789").Image(f.read())
+    await telegram.Send.To("user", "123456789").Image(f.read(), caption="图片描述")
+
+# 发送带格式说明的图片
+with open("image.jpg", "rb") as f:
+    await telegram.Send.To("user", "123456789").Image(f.read(), caption="*图片说明*", content_type="Markdown")
 
 # 发送视频
 with open("video.mp4", "rb") as f:
-    await telegram.Send.To("group", "987654321").Video(f.read())
+    await telegram.Send.To("group", "987654321").Video(f.read(), caption="这是个视频")
 
 # 发送文件
 with open("document.docx", "rb") as f:
-    await telegram.Send.To("user", "123456789").Document(f.read())
+    await telegram.Send.To("user", "123456789").Document(f.read(), caption="附件文件")
+
+# 编辑消息
+await telegram.Send.To("user", "123456789").Edit(123456, "修改后的内容")
+
+# 撤回消息
+await telegram.Send.To("user", "123456789").Recall(123456)
+
+# 检查消息是否存在
+exists = await telegram.Send.To("user", "123456789").CheckExist(123456)
 ```
 
 ## 配置说明
-在 `env.py` 中进行如下配置：
 
-```python
-sdk.env.set("TelegramAdapter", {
-    "token": "your_bot_token",
-    "mode": "webhook",  # 或 "polling"
-    "server": {
-        "host": "127.0.0.1",  # Webhook 监听地址
-        "port": 8443,         # Webhook 监听端口
-        "path": "/telegram/webhook"  # Webhook 路径
-    },
-    "webhook": {
-        "host": "yourdomain.com",  # 外部可访问域名
-        "port": 443,               # 对外 HTTPS 端口
-        "path": "/telegram/webhook"  # 必须与 server.path 一致
-    },
-    "proxy": {
-        "host": "127.0.0.1",      # 可选：代理服务器地址
-        "port": 1080,             # 可选：代理端口
-        "type": "socks5"          # 支持 socks4/socks5
-    }
-})
+首次运行会生成配置，内容及解释如下：
+
+```toml
+# config.toml
+[Telegram_Adapter]
+token = "your_bot_token"
+proxy_enabled = false
+mode = "webhook"  # 或 "polling"
+
+[Telegram_Adapter.proxy]
+host = "127.0.0.1"
+port = 1080
+type = "socks5"  # 支持 socks4/socks5
+
+[Telegram_Adapter.webhook]
+path = "/telegram/webhook"
+domain = "yourdomain.com"  # 外部可访问域名
 ```
 
 ## 事件类型
@@ -98,84 +113,43 @@ TelegramAdapter 支持以下事件类型的监听与处理：
 | `poll`                       | `poll`         | 投票创建              |
 | `poll_answer`                | `poll_answer`  | 投票响应              |
 
-## 链式发送方法
+## 通讯模式
+TelegramAdapter 支持两种通讯模式：
+- **Webhook**：使用 Telegram API 的 Webhook 机制，将消息推送到指定 URL。
+- **Polling**：使用 Telegram API 的 Polling 模式，通过轮询方式获取消息。
 
-TelegramAdapter 提供链式语法用于清晰地发送各类消息：
+> 如果你使用 Webhook 模式，请确保配置中包含以下字段：
+>   ```toml
+>   [Telegram_Adapter.webhook]
+>   path = "/telegram/webhook"
+>   domain = "yourdomain.com"
+>   ```
 
-### 文本消息
-```python
-await telegram.Send.To("user", user_id).Text("这是一条文本消息", parse_mode="markdown")
-```
+> 如果你使用 Polling 模式，只需要填写 token 字段即可
 
-### 图片消息
-```python
-with open("image.jpg", "rb") as f:
-    await telegram.Send.To("user", user_id).Image(f.read(), caption="图片描述", parse_mode="markdown")
-```
-
-### 视频消息
-```python
-with open("video.mp4", "rb") as f:
-    await telegram.Send.To("group", group_id).Video(f.read(), caption="这是个视频", parse_mode="markdown")
-```
-
-### 文件消息
-```python
-with open("document.pdf", "rb") as f:
-    await telegram.Send.To("user", user_id).Document(f.read(), caption="附件文件", parse_mode="markdown")
-```
-
-### 编辑消息
-```python
-await telegram.Send.To("user", user_id).EditMessageText(message_id, "这是修改后的消息", parse_mode="markdown")
-```
-
-### 删除消息
-```python
-await telegram.Send.To("user", user_id).DeleteMessage(message_id)
-```
-
-### 获取聊天信息
-```python
-chat_info = await telegram.Send.To("user", user_id).GetChat()
-print(chat_info)
-```
-
-## Webhook 设置
-
-如果你使用 Webhook 模式，请确保配置中包含以下字段：
-
-```python
-"webhook": {
-    "host": "yourdomain.com",
-    "port": 443,
-    "path": "/telegram/webhook"
-}
-```
 
 你可以选择性配置证书内容或路径：
-- `"cert_content"`: PEM 格式的证书字符串；
-- `"cert_path"`: 本地证书文件路径；
-
-如果不使用 Telegram 的证书验证，可通过反向代理（如 Nginx/Caddy）处理 HTTPS。
+- 通过反向代理（如 Nginx/Caddy）处理 HTTPS
 
 ## 代理设置（可选）
 
 如果需要通过代理连接 Telegram API，可在配置中添加：
 
-```python
-"proxy": {
-    "host": "127.0.0.1",
-    "port": 1080,
-    "type": "socks5"
-}
-```
+```toml
+[Telegram_Adapter]
+proxy_enabled = true
 
-目前支持 `socks5` 和 `socks4` 类型的代理。
+[Telegram_Adapter.proxy]
+host = "127.0.0.1"
+port = 1080
+type = "socks5"  # 支持 socks4/socks5
+```
 
 ## 注意事项
 - 二进制内容（如图片、视频等）应以 `bytes` 形式传入；
-- 推荐使用反向代理处理 HTTPS 请求，避免手动管理 SSL 证书。
+- 推荐使用反向代理处理 HTTPS 请求，避免手动管理 SSL 证书；
+- 所有格式化消息方法支持 `content_type` 参数，可选 "Markdown" 或 "HTML"；
+- 所有发送方法返回 `asyncio.Task` 对象，可以选择是否等待结果。
 
 ---
 

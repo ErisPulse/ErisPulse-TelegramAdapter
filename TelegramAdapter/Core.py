@@ -3,22 +3,42 @@ import aiohttp
 import json
 from typing import Dict, List, Optional, Any
 from ErisPulse import sdk
-from ErisPulse.Core import adapter_server
+from ErisPulse.Core import router
 from .Converter import TelegramConverter
 
 class TelegramAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
-        def Text(self, text: str, parse_mode: str = "markdown"):
+        def Text(self, text: str):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="sendMessage",
                     chat_id=self._target_id,
                     text=text,
-                    parse_mode=parse_mode
+                    parse_mode=None
                 )
             )
 
-        def Image(self, file: bytes, caption: str = "", parse_mode: str = "markdown"):
+        def Markdown(self, text: str, content_type: str = "MarkdownV2"):
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="sendMessage",
+                    chat_id=self._target_id,
+                    text=text,
+                    parse_mode=content_type
+                )
+            )
+
+        def Html(self, text: str, content_type: str = "HTML"):
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="sendMessage",
+                    chat_id=self._target_id,
+                    text=text,
+                    parse_mode=content_type
+                )
+            )
+
+        def Image(self, file: bytes, caption: str = "", content_type: str = None):
             return asyncio.create_task(
                 self._upload_file_and_call_api(
                     "sendPhoto",
@@ -26,11 +46,11 @@ class TelegramAdapter(sdk.BaseAdapter):
                     file=file,
                     chat_id=self._target_id,
                     caption=caption,
-                    parse_mode=parse_mode
+                    parse_mode=content_type
                 )
             )
 
-        def Document(self, file: bytes, caption: str = "", parse_mode: str = "markdown"):
+        def Document(self, file: bytes, caption: str = "", content_type: str = None):
             return asyncio.create_task(
                 self._upload_file_and_call_api(
                     "sendDocument",
@@ -38,11 +58,11 @@ class TelegramAdapter(sdk.BaseAdapter):
                     file=file,
                     chat_id=self._target_id,
                     caption=caption,
-                    parse_mode=parse_mode
+                    parse_mode=content_type
                 )
             )
 
-        def Video(self, file: bytes, caption: str = "", parse_mode: str = "markdown"):
+        def Video(self, file: bytes, caption: str = "", content_type: str = None):
             return asyncio.create_task(
                 self._upload_file_and_call_api(
                     "sendVideo",
@@ -50,11 +70,11 @@ class TelegramAdapter(sdk.BaseAdapter):
                     file=file,
                     chat_id=self._target_id,
                     caption=caption,
-                    parse_mode=parse_mode
+                    parse_mode=content_type
                 )
             )
 
-        def Audio(self, file: bytes, caption: str = "", parse_mode: str = "markdown"):
+        def Audio(self, file: bytes, caption: str = "", content_type: str = None):
             return asyncio.create_task(
                 self._upload_file_and_call_api(
                     "sendAudio",
@@ -62,18 +82,18 @@ class TelegramAdapter(sdk.BaseAdapter):
                     file=file,
                     chat_id=self._target_id,
                     caption=caption,
-                    parse_mode=parse_mode
+                    parse_mode=content_type
                 )
             )
 
-        def Edit(self, message_id: int, text: str, parse_mode: str = "markdown"):
+        def Edit(self, message_id: int, text: str, content_type: str = None):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="editMessageText",
                     chat_id=self._target_id,
                     message_id=message_id,
                     text=text,
-                    parse_mode=parse_mode
+                    parse_mode=content_type
                 )
             )
 
@@ -86,21 +106,11 @@ class TelegramAdapter(sdk.BaseAdapter):
                 )
             )
 
-        async def CheckExist(self, message_id: int):
-            try:
-                result = await self._adapter.call_api(
-                    "forwardMessage",
-                    chat_id=self._target_id,
-                    from_chat_id=self._target_id,
-                    message_id=message_id
-                )
-                return bool(result)
-            except Exception as e:
-                if "message to forward not found" in str(e):
-                    return False
-                raise
-
         async def _upload_file_and_call_api(self, endpoint, field_name, file, **kwargs):
+            # 将content_type转换为parse_mode以符合Telegram API
+            if 'content_type' in kwargs:
+                kwargs['parse_mode'] = kwargs.pop('content_type')
+                
             url = f"{self._adapter.base_url}/{endpoint}"
             data = aiohttp.FormData()
             data.add_field(
@@ -132,10 +142,10 @@ class TelegramAdapter(sdk.BaseAdapter):
         self._setup_event_mapping()
         self._proxy_enabled = self.config.get("proxy_enabled", False)
         self._proxy_config = self.config.get("proxy", {}) if self._proxy_enabled else None
-        self.convert = TelegramConverter(self.token).convert  # 初始化转换器
+        self.convert = TelegramConverter(self.token).convert
 
     def _load_config(self):
-        config = self.sdk.env.getConfig("Telegram_Adapter")
+        config = self.sdk.config.get("Telegram_Adapter")
         if not config:
             default_config = {
                 "token": "YOUR_BOT_TOKEN",
@@ -148,12 +158,12 @@ class TelegramAdapter(sdk.BaseAdapter):
                 "mode": "webhook",
                 "webhook": {
                     "path": "/telegram/webhook",
-                    "domain": None  # 新增域名配置项
+                    "domain": None
                 }
             }
             try:
                 sdk.logger.warning("Telegram适配器配置不存在，已自动创建默认配置")
-                self.sdk.env.setConfig("Telegram_Adapter", default_config)
+                self.sdk.config.set("Telegram_Adapter", default_config)
                 return default_config
             except Exception as e:
                 self.logger.error(f"保存默认配置失败: {str(e)}")
@@ -161,6 +171,8 @@ class TelegramAdapter(sdk.BaseAdapter):
         return config
 
     def _setup_event_mapping(self):
+        """设置事件映射，支持原始事件名和映射名"""
+        # 映射后的事件名（用于兼容性）
         self.event_map = {
             "message": "message",
             "edited_message": "message_edit",
@@ -174,6 +186,9 @@ class TelegramAdapter(sdk.BaseAdapter):
             "poll": "poll",
             "poll_answer": "poll_answer"
         }
+        
+        # 反向映射，用于支持原始事件名
+        self.reverse_event_map = {v: k for k, v in self.event_map.items()}
 
     async def _process_webhook_event(self, data: Dict):
         try:
@@ -190,15 +205,18 @@ class TelegramAdapter(sdk.BaseAdapter):
                     mapped_type = self.event_map[event_type]
                     self.logger.debug(f"Telegram事件 {event_type} -> {mapped_type}")
                     
-                    # 触发原生事件
+                    # 触发原始事件名（如 edited_message）
+                    await self.emit(event_type, data)
+                    
+                    # 触发映射后的事件名（如 message_edit）
                     await self.emit(mapped_type, data)
                     
                     # 转换为OneBot12事件并提交
-                    if hasattr(self.adapter, "emit"):
+                    if hasattr(self.sdk, "adapter"):
                         onebot_event = self.convert(data)
                         self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
                         if onebot_event:
-                            await self.adapter.emit(onebot_event)
+                            await self.sdk.adapter.emit(onebot_event)
                     
                     break
 
@@ -214,8 +232,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         webhook_config = self.config["webhook"]
         path = webhook_config.get("path", "/telegram/webhook")
 
-        # 注册到统一服务器系统
-        adapter_server.register_webhook(
+        router.register_http_route(
             "telegram",
             path,
             self._process_webhook_event,
@@ -227,7 +244,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         path = webhook_config.get("path", "/telegram/webhook")
         
         # 获取服务器配置 兼容性处理
-        server_config = self.sdk.env.getConfig("ErisPulse", {}).get("server") or self.sdk.getConfig("Server", {})
+        server_config = self.sdk.config.get("ErisPulse", {}).get("server") or self.sdk.config.get("Server", {})
         
         # 优先使用webhook配置中的域名，其次使用server配置中的host
         domain = webhook_config.get("domain") or server_config.get("host", "localhost")
@@ -278,7 +295,10 @@ class TelegramAdapter(sdk.BaseAdapter):
                             if event_type in update:
                                 mapped_type = self.event_map[event_type]
                                 
-                                # 触发原生事件
+                                # 触发原始事件名（如 message）
+                                await self.emit(event_type, update)
+                                
+                                # 触发映射后的事件名（如 message）
                                 await self.emit(mapped_type, update)
                                 
                                 # 转换为OneBot12事件并提交
@@ -293,6 +313,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             except Exception as e:
                 self.logger.error(f"轮询更新失败: {e}")
                 await asyncio.sleep(5)
+
     async def call_api(self, endpoint: str, **params):
         url = f"{self.base_url}/{endpoint}"
         try:
