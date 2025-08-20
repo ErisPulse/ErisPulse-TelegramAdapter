@@ -145,7 +145,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         self.convert = TelegramConverter(self.token).convert
 
     def _load_config(self):
-        config = self.sdk.config.get("Telegram_Adapter")
+        config = self.sdk.config.getConfig("Telegram_Adapter")
         if not config:
             default_config = {
                 "token": "YOUR_BOT_TOKEN",
@@ -163,7 +163,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             }
             try:
                 sdk.logger.warning("Telegram适配器配置不存在，已自动创建默认配置")
-                self.sdk.config.set("Telegram_Adapter", default_config)
+                self.sdk.config.setConfig("Telegram_Adapter", default_config)
                 return default_config
             except Exception as e:
                 self.logger.error(f"保存默认配置失败: {str(e)}")
