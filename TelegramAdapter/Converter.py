@@ -21,7 +21,7 @@ class TelegramConverter:
             "poll": "poll",
             "poll_answer": "poll_answer"
         }
-
+        
     def convert(self, raw_event: Dict) -> Optional[Dict]:
         """
         将Telegram事件转换为OneBot12格式
@@ -51,6 +51,9 @@ class TelegramConverter:
         # 分派到具体事件处理器
         for tg_type, mapped_type in self.event_map.items():
             if tg_type in raw_event:
+                # 添加原始事件类型字段
+                onebot_event["telegram_raw_type"] = tg_type
+                
                 handler = getattr(self, f"_handle_{mapped_type}", None)
                 if handler:
                     return handler(raw_event[tg_type], onebot_event)

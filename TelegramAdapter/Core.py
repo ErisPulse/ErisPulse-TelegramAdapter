@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict
 from ErisPulse import sdk
 from ErisPulse.Core import router
 from .Converter import TelegramConverter
@@ -170,26 +170,6 @@ class TelegramAdapter(sdk.BaseAdapter):
                 return default_config
         return config
 
-    def _setup_event_mapping(self):
-        """设置事件映射，支持原始事件名和映射名"""
-        # 映射后的事件名（用于兼容性）
-        self.event_map = {
-            "message": "message",
-            "edited_message": "message_edit",
-            "channel_post": "channel_post",
-            "edited_channel_post": "channel_post_edit",
-            "inline_query": "inline_query",
-            "chosen_inline_result": "chosen_inline_result",
-            "callback_query": "callback_query",
-            "shipping_query": "shipping_query",
-            "pre_checkout_query": "pre_checkout_query",
-            "poll": "poll",
-            "poll_answer": "poll_answer"
-        }
-        
-        # 反向映射，用于支持原始事件名
-        self.reverse_event_map = {v: k for k, v in self.event_map.items()}
-
     async def _process_webhook_event(self, data: Dict):
         try:
             if not isinstance(data, dict):
@@ -198,27 +178,12 @@ class TelegramAdapter(sdk.BaseAdapter):
             update_id = data.get("update_id")
             if update_id is None:
                 raise ValueError("无效的Telegram事件数据")
-
-            # 找到匹配的事件类型
-            for event_type in self.event_map:
-                if event_type in data:
-                    mapped_type = self.event_map[event_type]
-                    self.logger.debug(f"Telegram事件 {event_type} -> {mapped_type}")
-                    
-                    # 触发原始事件名（如 edited_message）
-                    await self.emit(event_type, data)
-                    
-                    # 触发映射后的事件名（如 message_edit）
-                    await self.emit(mapped_type, data)
-                    
-                    # 转换为OneBot12事件并提交
-                    if hasattr(self.sdk, "adapter"):
-                        onebot_event = self.convert(data)
-                        self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
-                        if onebot_event:
-                            await self.sdk.adapter.emit(onebot_event)
-                    
-                    break
+            
+            if hasattr(self.sdk, "adapter"):
+                onebot_event = self.convert(data)
+                self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
+                if onebot_event:
+                    await self.sdk.adapter.emit(onebot_event)
 
         except Exception as e:
             self.logger.error(f"处理Telegram事件错误: {str(e)}")
@@ -265,7 +230,7 @@ class TelegramAdapter(sdk.BaseAdapter):
 
     async def get_webhook_info(self):
         return await self.call_api("getWebhookInfo")
-
+    
     async def _poll_updates(self):
         offset = 0
         while True:
@@ -281,8 +246,7 @@ class TelegramAdapter(sdk.BaseAdapter):
                     self.logger.error(f"获取更新失败: {response.get('message')}")
                     await asyncio.sleep(5)
                     continue
-                    
-                # 从标准化响应中提取result
+                
                 updates = response.get("data")
                 
                 if updates:
@@ -291,25 +255,12 @@ class TelegramAdapter(sdk.BaseAdapter):
                         if update_id >= offset:
                             offset = update_id + 1
                         
-                        for event_type in self.event_map:
-                            if event_type in update:
-                                mapped_type = self.event_map[event_type]
-                                
-                                # 触发原始事件名（如 message）
-                                await self.emit(event_type, update)
-                                
-                                # 触发映射后的事件名（如 message）
-                                await self.emit(mapped_type, update)
-                                
-                                # 转换为OneBot12事件并提交
-                                if hasattr(self.sdk, "adapter"):
-                                    onebot_event = self.convert(update)
-                                    self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
-                                    if onebot_event:
-                                        await self.sdk.adapter.emit(onebot_event)
-                                
-                                break
-                await asyncio.sleep(1)  # 避免过于频繁的请求
+                        if hasattr(self.sdk, "adapter"):
+                            onebot_event = self.convert(update)
+                            self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
+                            if onebot_event:
+                                await self.sdk.adapter.emit(onebot_event)
+                await asyncio.sleep(1)
             except Exception as e:
                 self.logger.error(f"轮询更新失败: {e}")
                 await asyncio.sleep(5)
