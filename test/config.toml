@@ -1,0 +1,42 @@
+[Telegram_Adapter]
+token = "7897376613:AAFVNx6zOTsNpYAoPeJYsEZcP6BUtZMaATo"
+proxy_enabled = false
+
+[HelpModule]
+show_hidden_commands = false
+group_commands = true
+
+[Telegram_Adapter.proxy]
+host = "127.0.0.1"
+port = 1080
+type = "socks5"
+
+[ErisPulse.server]
+host = "0.0.0.0"
+port = 8000
+
+[ErisPulse.logger]
+level = "DEBUG"
+log_files = []
+memory_limit = 1000
+
+[ErisPulse.storage]
+max_snapshot = 20
+
+[ErisPulse.framework]
+enable_lazy_loading = true
+
+[ErisPulse.modules.status]
+HelpModule = true
+
+[ErisPulse.adapters.status]
+telegram = true
+tg = true
+
+[ErisPulse.event.command]
+prefix = "/"
+case_sensitive = true
+allow_space_prefix = false
+
+[ErisPulse.event.message]
+ignore_self = true

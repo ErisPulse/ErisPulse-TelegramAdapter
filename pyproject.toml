@@ -1,6 +1,6 @@
 [project]
 name = "ErisPulse-TelegramAdapter"
-version = "3.4.0"
+version = "3.5.0"
 description = "ErisPulse的云湖协议适配模块"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,3 +18,6 @@ dependencies = [
 [project.entry-points."erispulse.adapter"]
 telegram = "TelegramAdapter:TelegramAdapter"
 tg = "TelegramAdapter:TelegramAdapter"
+
+[tool.setuptools.packages.find]
+include = [ "TelegramAdapter" ]
