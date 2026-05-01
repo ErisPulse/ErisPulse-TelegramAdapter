@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import json
+import re
 from typing import Dict, List, Any, Union
 from ErisPulse import sdk
 from ErisPulse.Core import router
@@ -339,6 +340,21 @@ class TelegramAdapter(sdk.BaseAdapter):
 
         # ============ 辅助方法 ============
 
+        @staticmethod
+        def _escape_markdown_v2(text: str) -> str:
+            return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
+
+        @staticmethod
+        def _escape_html(text: str) -> str:
+            return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        def _escape_text_by_parse_mode(self, text: str, mode: str) -> str:
+            if mode == "MarkdownV2":
+                return self._escape_markdown_v2(text)
+            if mode == "HTML":
+                return self._escape_html(text)
+            return text
+
         def _reset_modifiers(self):
             """重置所有修饰状态"""
             self._at_user_ids = []
@@ -524,8 +540,9 @@ class TelegramAdapter(sdk.BaseAdapter):
                 caption = full_text or data.get("caption", "")
 
                 if isinstance(media_file, bytes):
-                    params["caption"] = caption
                     ct = data.get("content_type")
+                    caption_to_send = self._escape_text_by_parse_mode(caption, ct) if ct else caption
+                    params["caption"] = caption_to_send
                     if ct is not None:
                         params["parse_mode"] = ct
                     return {
@@ -538,15 +555,20 @@ class TelegramAdapter(sdk.BaseAdapter):
                     }
 
                 params[field_name] = media_file
-                params["caption"] = caption
                 ct = data.get("content_type")
+                effective_parse = ct or parse_mode
+                caption_to_send = self._escape_text_by_parse_mode(caption, effective_parse) if effective_parse else caption
+                params["caption"] = caption_to_send
                 if ct is not None:
                     params["parse_mode"] = ct
                 if parse_mode and not ct:
                     params["parse_mode"] = parse_mode
                 return {"endpoint": endpoint, "params": params}
             else:
-                params["text"] = full_text or " "
+                text_to_send = full_text or " "
+                if parse_mode:
+                    text_to_send = self._escape_text_by_parse_mode(text_to_send, parse_mode)
+                params["text"] = text_to_send
                 if entities:
                     params["entities"] = entities
                 if parse_mode:
@@ -559,6 +581,8 @@ class TelegramAdapter(sdk.BaseAdapter):
                 content_type = kwargs.pop("content_type")
                 if content_type is not None:
                     kwargs["parse_mode"] = content_type
+                    if "caption" in kwargs:
+                        kwargs["caption"] = self._escape_text_by_parse_mode(kwargs["caption"], content_type)
 
             if self._reply_message_id and "reply_to_message_id" not in kwargs:
                 try:
