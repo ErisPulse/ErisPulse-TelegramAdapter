@@ -632,6 +632,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             self.config.get("proxy", {}) if self._proxy_enabled else None
         )
         converter = TelegramConverter(self.token)
+        self._converter = converter
         self.convert = converter.convert
         self.bot_id = converter.bot_id
 
@@ -796,6 +797,14 @@ class TelegramAdapter(sdk.BaseAdapter):
                 self.logger.warning("代理已启用但未配置，将不使用代理")
 
         self.poll_task = asyncio.create_task(self._poll_updates())
+
+        try:
+            me = await self.call_api("getMe")
+            if me.get("status") == "ok" and isinstance(me.get("data"), dict):
+                self._converter._bot_username = me["data"].get("username", "")
+        except Exception:
+            pass
+
         self.logger.info("Telegram适配器已启动（polling 模式）")
 
         await self.sdk.adapter.emit(

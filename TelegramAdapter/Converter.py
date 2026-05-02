@@ -20,6 +20,7 @@ class TelegramConverter:
     def __init__(self, token: str):
         self.token = token
         self.bot_id = token.split(":")[0] if token and ":" in token else ""
+        self._bot_username = ""
         self._event_type_map = {
             "message": "message",
             "edited_message": "message",
@@ -612,46 +613,37 @@ class TelegramConverter:
         - 按 entities 将文本拆分为纯文本段和 mention 段
         - mention 段使用 OB12 标准: {"type": "mention", "data": {"user_id": "...", "user_name": "..."}}
         - 纯文本段中不包含 @用户名
+        - bot_command 中的 @botname 后缀会被剥离（如 /help@BotName → /help）
+        - 对 bot 自身的 mention 会被过滤（如 @BotName 不会出现在消息段中）
         """
-        text = text_override if text_override is not None else (message.get("text") or "")
-        if not text:
+        is_caption = text_override is not None
+        raw_text = text_override if is_caption else (message.get("text") or "")
+        if not raw_text:
             return
 
-        entities = message.get("entities", [])
-        if not entities:
-            # 无实体，整段为纯文本
-            segments.append({"type": "text", "data": {"text": text}})
-            return
+        raw_entities = message.get("caption_entities", []) if is_caption else message.get("entities", [])
 
-        # 过滤出 mention 相关实体并按 offset 排序
-        mention_entities = []
-        for entity in entities:
-            etype = entity.get("type", "")
-            if etype in ("mention", "text_mention"):
-                mention_entities.append(entity)
+        text, entities = self._strip_bot_from_text(raw_text, raw_entities)
+
+        mention_entities = [e for e in entities if e.get("type") in ("mention", "text_mention")]
 
         if not mention_entities:
-            # 无 mention 实体，整段为纯文本
             segments.append({"type": "text", "data": {"text": text}})
             return
 
-        # 按 offset 排序
         mention_entities.sort(key=lambda e: e["offset"])
 
-        # 分段处理
         current_pos = 0
         for entity in mention_entities:
             offset = entity["offset"]
             length = entity["length"]
             etype = entity["type"]
 
-            # offset 前的纯文本
             if current_pos < offset:
                 plain_text = text[current_pos:offset]
                 if plain_text:
                     segments.append({"type": "text", "data": {"text": plain_text}})
 
-            # mention 段
             mention_text = text[offset:offset + length]
             if etype == "text_mention":
                 user = entity.get("user", {})
@@ -663,22 +655,104 @@ class TelegramConverter:
                     },
                 })
             elif etype == "mention":
-                # mention 格式: @username，无法获取 user_id
-                segments.append({
-                    "type": "mention",
-                    "data": {
-                        "user_id": "",
-                        "user_name": mention_text,
-                    },
-                })
+                if mention_text == f"@{self._bot_username}":
+                    pass
+                else:
+                    segments.append({
+                        "type": "mention",
+                        "data": {
+                            "user_id": "",
+                            "user_name": mention_text,
+                        },
+                    })
 
             current_pos = offset + length
 
-        # 最后一段纯文本
         if current_pos < len(text):
             remaining = text[current_pos:]
             if remaining:
                 segments.append({"type": "text", "data": {"text": remaining}})
+
+    def _strip_bot_from_text(self, text: str, entities: list) -> tuple:
+        """
+        从文本和实体中移除 bot 自身相关的 mention/command 后缀
+
+        处理两种情况：
+        1. @BotName /cmd → /cmd（移除 mention 实体及相关文本）
+        2. /cmd@BotName → /cmd（剥离 command 中的 @botname 后缀）
+        """
+        if not self._bot_username or not entities:
+            return text, entities
+
+        bot_mention = f"@{self._bot_username}"
+        new_entities = list(entities)
+        remove_ranges = []
+
+        for entity in entities:
+            etype = entity.get("type", "")
+            offset = entity.get("offset", 0)
+            length = entity.get("length", 0)
+            entity_text = text[offset:offset + length]
+
+            if etype == "mention" and entity_text == bot_mention:
+                remove_ranges.append((offset, length))
+                new_entities.remove(entity)
+            elif etype == "bot_command" and entity_text.endswith(bot_mention):
+                stripped_len = length - len(bot_mention)
+                entity["length"] = stripped_len
+                new_text = text[:offset + stripped_len] + text[offset + length:]
+                remaining_entities = []
+                for e in new_entities:
+                    e_offset = e.get("offset", 0)
+                    if e is entity:
+                        remaining_entities.append({"type": e["type"], "offset": e_offset, "length": stripped_len})
+                    elif e_offset > offset:
+                        remaining_entities.append({**e, "offset": e_offset - len(bot_mention)})
+                    else:
+                        remaining_entities.append(e)
+                return new_text, remaining_entities
+
+        if not remove_ranges:
+            return text, new_entities
+
+        remove_ranges.sort(key=lambda r: r[0])
+
+        new_text_parts = []
+        new_entities = []
+        current_pos = 0
+        removed = 0
+
+        for rm_offset, rm_length in remove_ranges:
+            if current_pos < rm_offset:
+                new_text_parts.append(text[current_pos:rm_offset])
+            current_pos = rm_offset + rm_length
+            removed += rm_length
+
+        if current_pos < len(text):
+            new_text_parts.append(text[current_pos:])
+
+        result_text = "".join(new_text_parts).lstrip()
+
+        for e in entities:
+            etype = e.get("type", "")
+            if etype == "mention" and text[e["offset"]:e["offset"] + e["length"]] == bot_mention:
+                continue
+            e_offset = e.get("offset", 0)
+            e_length = e.get("length", 0)
+            e_end = e_offset + e_length
+            new_offset = e_offset
+            for rm_offset, rm_length in remove_ranges:
+                if e_offset >= rm_offset + rm_length:
+                    new_offset -= rm_length
+            new_entity = dict(e)
+            new_entity["offset"] = new_offset
+            if result_text[new_offset:new_offset + e_length] != text[e_offset:e_end]:
+                adjusted = result_text.find(text[e_offset:e_end])
+                if adjusted >= 0:
+                    new_entity["offset"] = adjusted
+            new_entities.append(new_entity)
+
+        return result_text, new_entities
 
     def _build_file_url(self, file_path: Optional[str]) -> Optional[str]:
         """构建文件 URL"""
