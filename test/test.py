@@ -480,14 +480,14 @@ class TestRunner:
             keyboard = [
                 [
                     {"text": "🔗 访问网站", "url": "https://example.com"},
-                    {"text": "📋 复制内容", "copy_text": {"text": "copied_value"}},
+                    {"text": "📋 复制内容", "callback_data": "copy"},
                 ],
                 [
                     {"text": "✅ 确认", "callback_data": "yes"},
                     {"text": "❌ 取消", "callback_data": "no"},
                 ],
                 [
-                    {"text": "🎮 游戏", "callback_game": "game1"},
+                    {"text": "🔍 内联搜索", "switch_inline_query_current_chat": "search "},
                 ],
             ]
             return await self.adapter.To("group", group_id).Keyboard(keyboard).Text("复杂内联键盘演示：")

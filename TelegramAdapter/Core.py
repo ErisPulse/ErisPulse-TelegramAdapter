@@ -96,7 +96,7 @@ register_event_mixin("telegram", TelegramEventMixin)
 
 class TelegramAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
-        """消息发送 DSL 实现"""
+        """Telegram 消息发送 DSL"""
 
         def __init__(self, adapter, target_type=None, target_id=None, account_id=None):
             super().__init__(adapter, target_type, target_id, account_id)
@@ -107,7 +107,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             self._protect_content = False
             self._silent = False
 
-        # ============ 消息发送方法 ============
+        # ==================== 消息发送方法 ====================
 
         def Text(self, text: str):
             """发送纯文本消息"""
@@ -153,23 +153,16 @@ class TelegramAdapter(sdk.BaseAdapter):
             """发送贴纸"""
             if isinstance(file, bytes):
                 return asyncio.create_task(self._send_sticker_bytes(file))
-            else:
-                return asyncio.create_task(
-                    self._adapter.call_api(
-                        endpoint="sendSticker",
-                        chat_id=self._target_id,
-                        sticker=file,
-                    )
-                )
+            return asyncio.create_task(
+                self._adapter.call_api(endpoint="sendSticker", chat_id=self._target_id, sticker=file)
+            )
 
         def Location(self, latitude: float, longitude: float):
             """发送位置"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="sendLocation",
-                    chat_id=self._target_id,
-                    latitude=latitude,
-                    longitude=longitude,
+                    endpoint="sendLocation", chat_id=self._target_id,
+                    latitude=latitude, longitude=longitude,
                 )
             )
 
@@ -177,12 +170,8 @@ class TelegramAdapter(sdk.BaseAdapter):
             """发送地点"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="sendVenue",
-                    chat_id=self._target_id,
-                    latitude=latitude,
-                    longitude=longitude,
-                    title=title,
-                    address=address,
+                    endpoint="sendVenue", chat_id=self._target_id,
+                    latitude=latitude, longitude=longitude, title=title, address=address,
                 )
             )
 
@@ -190,43 +179,53 @@ class TelegramAdapter(sdk.BaseAdapter):
             """发送联系人"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="sendContact",
-                    chat_id=self._target_id,
-                    phone_number=phone_number,
-                    first_name=first_name,
-                    last_name=last_name,
+                    endpoint="sendContact", chat_id=self._target_id,
+                    phone_number=phone_number, first_name=first_name, last_name=last_name,
                 )
             )
 
         def Face(self, emoji: str):
             """发送表情消息（使用 Telegram Dice API）"""
             return asyncio.create_task(
-                self._adapter.call_api(
-                    endpoint="sendDice",
-                    chat_id=self._target_id,
-                    emoji=emoji,
-                )
+                self._adapter.call_api(endpoint="sendDice", chat_id=self._target_id, emoji=emoji)
             )
 
-        def Markdown(self, text: str, content_type: str = "MarkdownV2"):
-            """发送 Markdown 格式消息"""
-            return self.Raw_ob12(
-                [{"type": "markdown", "data": {"markdown": text, "content_type": content_type}}]
-            )
+        # ---- 富文本消息（直接调用 API，不经过 Raw_ob12 转换管道） ----
 
-        def HTML(self, text: str):
-            """发送 HTML 格式消息"""
-            return self.Raw_ob12(
-                [{"type": "html", "data": {"html": text, "content_type": "HTML"}}]
-            )
+        def Markdown(self, text: str, content_type: str = "Markdown"):
+            """发送 Markdown 格式消息
+
+            用户需按 Telegram 对应的 Markdown 语法编写内容。
+            默认使用 Markdown v1（无需转义特殊字符）。
+            如需 MarkdownV2 的高级特性（删除线、下划线等），可传 content_type="MarkdownV2"，
+            但需自行确保内容符合 Telegram MarkdownV2 转义规则。
+            """
+            params = {"chat_id": self._target_id, "text": text, "parse_mode": content_type}
+            self._apply_common_params(params)
+            self._reset_modifiers()
+            return asyncio.create_task(self._adapter.call_api(endpoint="sendMessage", **params))
+
+        def Html(self, text: str):
+            """发送 HTML 格式消息
+
+            自动清洗不支持的 HTML 标签（保留内容），仅保留 Telegram 支持的标签子集。
+            Telegram 支持的标签: b/strong, i/em, u/ins, s/strike/del, code, pre, a,
+            tg-spoiler, blockquote, tg-emoji
+            """
+            params = {
+                "chat_id": self._target_id,
+                "text": self._sanitize_html_for_tg(text),
+                "parse_mode": "HTML",
+            }
+            self._apply_common_params(params)
+            self._reset_modifiers()
+            return asyncio.create_task(self._adapter.call_api(endpoint="sendMessage", **params))
+
+        # ---- 消息操作方法 ----
 
         def Edit(self, message_id: int, text: str, content_type: str = None):
             """编辑已有消息"""
-            params = {
-                "chat_id": self._target_id,
-                "message_id": message_id,
-                "text": text,
-            }
+            params = {"chat_id": self._target_id, "message_id": message_id, "text": text}
             if content_type:
                 params["parse_mode"] = content_type
             return asyncio.create_task(
@@ -237,9 +236,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             """删除指定消息"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="deleteMessage",
-                    chat_id=self._target_id,
-                    message_id=message_id,
+                    endpoint="deleteMessage", chat_id=self._target_id, message_id=message_id,
                 )
             )
 
@@ -247,10 +244,8 @@ class TelegramAdapter(sdk.BaseAdapter):
             """转发消息"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="forwardMessage",
-                    chat_id=self._target_id,
-                    from_chat_id=from_chat_id,
-                    message_id=message_id,
+                    endpoint="forwardMessage", chat_id=self._target_id,
+                    from_chat_id=from_chat_id, message_id=message_id,
                 )
             )
 
@@ -258,10 +253,8 @@ class TelegramAdapter(sdk.BaseAdapter):
             """复制消息（不带转发来源）"""
             return asyncio.create_task(
                 self._adapter.call_api(
-                    endpoint="copyMessage",
-                    chat_id=self._target_id,
-                    from_chat_id=from_chat_id,
-                    message_id=message_id,
+                    endpoint="copyMessage", chat_id=self._target_id,
+                    from_chat_id=from_chat_id, message_id=message_id,
                 )
             )
 
@@ -270,46 +263,42 @@ class TelegramAdapter(sdk.BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="answerCallbackQuery",
-                    callback_query_id=callback_query_id,
-                    text=text,
-                    show_alert=show_alert,
+                    callback_query_id=callback_query_id, text=text, show_alert=show_alert,
                 )
             )
 
-        # ============ 原始消息发送方法 ============
+        # ==================== 原始消息发送方法 ====================
 
         def Raw_ob12(self, message: list, **kwargs):
             """发送 OneBot12 标准格式消息"""
 
-            async def _send_raw_ob12():
+            async def _send():
                 converted = await self._convert_ob12_to_telegram(message, **kwargs)
-
                 if isinstance(converted, dict):
                     return await self._do_send(converted)
                 elif isinstance(converted, list):
                     results = []
                     for call in converted:
-                        result = await self._do_send(call)
-                        results.append(result)
+                        results.append(await self._do_send(call))
                     self._reset_modifiers()
                     return results[-1] if results else None
 
-            return asyncio.create_task(_send_raw_ob12())
+            return asyncio.create_task(_send())
 
         def Raw_json(self, json_str: str):
             """发送原始 JSON 格式消息"""
             data = json.loads(json_str)
 
-            async def _send_raw_json():
+            async def _send():
                 endpoint = data.pop("endpoint", "sendMessage")
                 return await self._adapter.call_api(endpoint=endpoint, **data)
 
-            return asyncio.create_task(_send_raw_json())
+            return asyncio.create_task(_send())
 
-        # ============ 链式修饰方法 ============
+        # ==================== 链式修饰方法 ====================
 
         def At(self, user_id: str) -> "Send":
-            """@指定用户（通过 Telegram entities 实现）"""
+            """@指定用户"""
             self._at_user_ids.append(user_id)
             return self
 
@@ -338,7 +327,7 @@ class TelegramAdapter(sdk.BaseAdapter):
             self._silent = silent
             return self
 
-        # ============ 辅助方法 ============
+        # ==================== 内部辅助方法 ====================
 
         @staticmethod
         def _escape_markdown_v2(text: str) -> str:
@@ -348,15 +337,39 @@ class TelegramAdapter(sdk.BaseAdapter):
         def _escape_html(text: str) -> str:
             return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        def _escape_text_by_parse_mode(self, text: str, mode: str) -> str:
-            if mode == "MarkdownV2":
-                return self._escape_markdown_v2(text)
-            if mode == "HTML":
-                return self._escape_html(text)
-            return text
+        @staticmethod
+        def _sanitize_html_for_tg(text: str) -> str:
+            """清洗 HTML 为 Telegram 支持的子集，移除不支持的标签（保留内容）"""
+            text = re.sub(r'<h[1-6][^>]*>', '<b>', text, flags=re.IGNORECASE)
+            text = re.sub(r'</h[1-6]>', '</b>\n', text, flags=re.IGNORECASE)
+            text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+            text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
+            text = re.sub(r'<p[^>]*>', '', text, flags=re.IGNORECASE)
+            text = re.sub(r'<hr\s*/?>', '\n', text, flags=re.IGNORECASE)
+            text = re.sub(r'<li[^>]*>', '\u2022 ', text, flags=re.IGNORECASE)
+            text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
+
+            supported = {
+                'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
+                'code', 'pre', 'a', 'tg-spoiler', 'blockquote', 'tg-emoji',
+            }
+
+            def _strip_tag(m):
+                tag_match = re.match(r'</?(\w+[\w-]*)', m.group(0))
+                if tag_match:
+                    return m.group(0) if tag_match.group(1).lower() in supported else ''
+                return m.group(0)
+
+            text = re.sub(r'</?[\w][\w-]*(?:\s[^>]*)?/?>', _strip_tag, text)
+            text = re.sub(r'\s+style=["\'][^"\']*["\']', '', text, flags=re.IGNORECASE)
+
+            lines = [re.sub(r'[ \t]+', ' ', line.strip()) for line in text.split('\n')]
+            text = '\n'.join(lines)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            return text.strip()
 
         def _reset_modifiers(self):
-            """重置所有修饰状态"""
+            """重置所有链式修饰状态"""
             self._at_user_ids = []
             self._reply_message_id = None
             self._at_all = False
@@ -364,44 +377,21 @@ class TelegramAdapter(sdk.BaseAdapter):
             self._protect_content = False
             self._silent = False
 
-        async def _send_sticker_bytes(self, file_data: bytes):
-            """上传并发送贴纸文件"""
-            url = f"{self._adapter.base_url}/sendSticker"
-            data = aiohttp.FormData()
-            data.add_field("sticker", file_data, filename="sticker.webp", content_type="image/webp")
-            data.add_field("chat_id", str(self._target_id))
-
+        def _apply_common_params(self, params: dict):
+            """将链式修饰参数应用到 API 参数中"""
             if self._reply_message_id:
                 try:
-                    data.add_field("reply_to_message_id", str(int(self._reply_message_id)))
+                    params["reply_to_message_id"] = int(self._reply_message_id)
                 except (ValueError, TypeError):
                     pass
-
             if self._protect_content:
-                data.add_field("protect_content", "true")
+                params["protect_content"] = True
             if self._silent:
-                data.add_field("disable_notification", "true")
+                params["disable_notification"] = True
+            if self._inline_keyboard:
+                params["reply_markup"] = {"inline_keyboard": self._inline_keyboard}
 
-            async with self._adapter.session.post(url, data=data) as response:
-                raw_response = await response.json()
-                self._reset_modifiers()
-                return self._adapter._format_response(raw_response)
-
-        async def _do_send(self, call: Dict) -> Dict:
-            """执行发送调用"""
-            endpoint = call["endpoint"]
-            params = call["params"]
-
-            media_file_data = params.pop("_media_file_data", None)
-            if media_file_data is not None:
-                return await self._upload_file_and_call_api(
-                    endpoint, params.pop("_field_name"), media_file_data, **params
-                )
-
-            self._reset_modifiers()
-            return await self._adapter.call_api(endpoint=endpoint, **params)
-
-        def _add_mention_entity(self, entities: list, text_parts: list, user_id, name: str):
+        def _add_mention_entity(self, entities: list, text_parts: list, user_id: str, name: str):
             """添加 Telegram mention entity"""
             start_pos = len("".join(text_parts))
             text_parts.append(name)
@@ -419,30 +409,89 @@ class TelegramAdapter(sdk.BaseAdapter):
                     "length": len(name),
                 })
 
-        def _apply_common_params(self, params: dict):
-            """应用通用修饰参数"""
+        async def _send_sticker_bytes(self, file_data: bytes):
+            """上传并发送贴纸文件"""
+            url = f"{self._adapter.base_url}/sendSticker"
+            data = aiohttp.FormData()
+            data.add_field("sticker", file_data, filename="sticker.webp", content_type="image/webp")
+            data.add_field("chat_id", str(self._target_id))
+
             if self._reply_message_id:
                 try:
-                    params["reply_to_message_id"] = int(self._reply_message_id)
+                    data.add_field("reply_to_message_id", str(int(self._reply_message_id)))
                 except (ValueError, TypeError):
                     pass
-
             if self._protect_content:
-                params["protect_content"] = True
+                data.add_field("protect_content", "true")
             if self._silent:
-                params["disable_notification"] = True
+                data.add_field("disable_notification", "true")
 
+            async with self._adapter.session.post(url, data=data) as response:
+                raw_response = await response.json()
+                self._reset_modifiers()
+                return self._adapter._format_response(raw_response)
+
+        async def _do_send(self, call: Dict) -> Dict:
+            """执行一次发送调用"""
+            endpoint = call["endpoint"]
+            params = call["params"]
+
+            file_data = params.pop("_media_file_data", None)
+            if file_data is not None:
+                return await self._upload_file_and_call_api(
+                    endpoint, params.pop("_field_name"), file_data, **params
+                )
+
+            self._reset_modifiers()
+            return await self._adapter.call_api(endpoint=endpoint, **params)
+
+        async def _upload_file_and_call_api(self, endpoint, field_name, file, **kwargs):
+            """上传文件并调用 API"""
+            if "content_type" in kwargs:
+                ct = kwargs.pop("content_type")
+                if ct is not None:
+                    kwargs["parse_mode"] = ct
+
+            if self._reply_message_id and "reply_to_message_id" not in kwargs:
+                try:
+                    kwargs["reply_to_message_id"] = int(self._reply_message_id)
+                except (ValueError, TypeError):
+                    pass
+            if self._protect_content:
+                kwargs["protect_content"] = "true"
+            if self._silent:
+                kwargs["disable_notification"] = "true"
             if self._inline_keyboard:
-                params["reply_markup"] = json.dumps({"inline_keyboard": self._inline_keyboard})
+                kwargs["reply_markup"] = json.dumps({"inline_keyboard": self._inline_keyboard})
+
+            url = f"{self._adapter.base_url}/{endpoint}"
+            data = aiohttp.FormData()
+            data.add_field(field_name, file, filename=f"file.{field_name}", content_type="application/octet-stream")
+
+            for key, value in kwargs.items():
+                data.add_field(key, json.dumps(value) if isinstance(value, (dict, list)) else str(value))
+
+            async with self._adapter.session.post(url, data=data) as response:
+                raw_response = await response.json()
+                self._reset_modifiers()
+                return self._adapter._format_response(raw_response)
+
+        # ==================== OB12 消息段转换 ====================
 
         async def _convert_ob12_to_telegram(self, message_segments: list, **kwargs) -> Dict:
-            """将 OneBot12 消息段转换为 Telegram API 调用"""
+            """将 OneBot12 消息段转换为 Telegram API 调用参数
+
+            处理流程：
+            1. 遍历消息段，收集文本、媒体、实体信息
+            2. 富文本段（markdown/html）设置 parse_mode 并原样传递文本
+            3. 构建最终 API 调用参数（文本消息 / 媒体消息）
+            """
             text_parts = []
             entities = []
             media_segment = None
             reply_message_id = None
-            at_all = False
             parse_mode = None
+            rich_text = False
 
             for segment in message_segments:
                 seg_type = segment.get("type")
@@ -451,7 +500,7 @@ class TelegramAdapter(sdk.BaseAdapter):
                 if seg_type == "text":
                     text_parts.append(data.get("text", ""))
 
-                elif seg_type in ["image", "video", "voice", "file", "audio"]:
+                elif seg_type in ("image", "video", "voice", "file", "audio"):
                     if not media_segment:
                         media_segment = {"type": seg_type, "data": data}
 
@@ -470,16 +519,17 @@ class TelegramAdapter(sdk.BaseAdapter):
 
                 elif seg_type == "markdown":
                     text_parts.append(data.get("markdown", ""))
-                    parse_mode = data.get("content_type", "MarkdownV2")
+                    parse_mode = data.get("content_type", "Markdown")
+                    rich_text = True
 
                 elif seg_type == "html":
-                    text_parts.append(data.get("html", ""))
-                    parse_mode = data.get("content_type", "HTML")
+                    text_parts.append(self._sanitize_html_for_tg(data.get("html", "")))
+                    parse_mode = "HTML"
+                    rich_text = True
 
                 elif seg_type == "telegram_sticker":
                     file_data = data.get("file_id") or data.get("file", "")
                     if isinstance(file_data, bytes):
-                        # bytes 贴纸需要单独上传，合并到媒体段
                         media_segment = {"type": "sticker", "data": data}
                     else:
                         text_parts.append(data.get("emoji", ""))
@@ -487,135 +537,106 @@ class TelegramAdapter(sdk.BaseAdapter):
                 elif seg_type == "telegram_inline_keyboard":
                     self._inline_keyboard = data.get("inline_keyboard", [])
 
-            # 链式修饰中的 At 用户
             for user_id in self._at_user_ids:
                 self._add_mention_entity(entities, text_parts, user_id, f"@{user_id}")
 
-            final_reply_id = reply_message_id or self._reply_message_id
-            final_at_all = at_all or self._at_all
-
             full_text = "".join(text_parts)
-            if final_at_all:
+            if self._at_all:
                 full_text = "@All " + full_text
 
             params = {"chat_id": self._target_id}
             self._apply_common_params(params)
 
+            final_reply_id = reply_message_id or self._reply_message_id
             if final_reply_id and "reply_to_message_id" not in params:
                 try:
                     params["reply_to_message_id"] = int(final_reply_id)
                 except (ValueError, TypeError):
                     pass
 
-            # 贴纸发送（bytes 上传）
+            # 贴纸
             if media_segment and media_segment["type"] == "sticker":
-                sticker_data = media_segment["data"].get("file_id") or media_segment["data"].get("file", b"")
-                if isinstance(sticker_data, bytes):
+                sticker_file = media_segment["data"].get("file_id") or media_segment["data"].get("file", b"")
+                if isinstance(sticker_file, bytes):
                     return {
                         "endpoint": "sendSticker",
-                        "params": {
-                            **params,
-                            "_field_name": "sticker",
-                            "_media_file_data": sticker_data,
-                        },
+                        "params": {**params, "_field_name": "sticker", "_media_file_data": sticker_file},
                     }
-                else:
-                    params["sticker"] = sticker_data
-                    return {"endpoint": "sendSticker", "params": params}
+                params["sticker"] = sticker_file
+                return {"endpoint": "sendSticker", "params": params}
 
+            # 媒体消息
             if media_segment:
-                seg_type = media_segment["type"]
-                data = media_segment["data"]
+                return self._build_media_params(params, media_segment, full_text, parse_mode, rich_text)
 
-                endpoint_map = {
-                    "image": ("sendPhoto", "photo"),
-                    "video": ("sendVideo", "video"),
-                    "voice": ("sendVoice", "voice"),
-                    "audio": ("sendAudio", "audio"),
-                    "file": ("sendDocument", "document"),
+            # 纯文本消息
+            return self._build_text_params(params, full_text, parse_mode, rich_text, entities)
+
+        def _build_media_params(self, params: dict, media_segment: dict, caption: str, parse_mode: str, rich_text: bool) -> dict:
+            """构建媒体消息的 API 参数"""
+            seg_type = media_segment["type"]
+            data = media_segment["data"]
+
+            endpoint_map = {
+                "image": ("sendPhoto", "photo"),
+                "video": ("sendVideo", "video"),
+                "voice": ("sendVoice", "voice"),
+                "audio": ("sendAudio", "audio"),
+                "file": ("sendDocument", "document"),
+            }
+            endpoint, field_name = endpoint_map.get(seg_type, ("sendDocument", "document"))
+
+            media_file = data.get("file_id") or data.get("url") or data.get("file", "")
+            caption = caption or data.get("caption", "")
+
+            effective_parse = data.get("content_type") or parse_mode
+
+            if isinstance(media_file, bytes):
+                if effective_parse:
+                    params["parse_mode"] = effective_parse
+                    if not rich_text:
+                        caption = self._escape_text_by_parse_mode(caption, effective_parse)
+                params["caption"] = caption
+                return {
+                    "endpoint": endpoint,
+                    "params": {**params, "_field_name": field_name, "_media_file_data": media_file},
                 }
-                endpoint, field_name = endpoint_map.get(seg_type, ("sendDocument", "document"))
 
-                media_file = data.get("file_id") or data.get("url") or data.get("file", "")
-                caption = full_text or data.get("caption", "")
+            params[field_name] = media_file
+            if effective_parse:
+                params["parse_mode"] = effective_parse
+                if not rich_text:
+                    caption = self._escape_text_by_parse_mode(caption, effective_parse)
+            params["caption"] = caption
+            return {"endpoint": endpoint, "params": params}
 
-                if isinstance(media_file, bytes):
-                    ct = data.get("content_type")
-                    caption_to_send = self._escape_text_by_parse_mode(caption, ct) if ct else caption
-                    params["caption"] = caption_to_send
-                    if ct is not None:
-                        params["parse_mode"] = ct
-                    return {
-                        "endpoint": endpoint,
-                        "params": {
-                            **params,
-                            "_field_name": field_name,
-                            "_media_file_data": media_file,
-                        },
-                    }
+        def _build_text_params(self, params: dict, text: str, parse_mode: str, rich_text: bool, entities: list) -> dict:
+            """构建文本消息的 API 参数"""
+            text = text or " "
 
-                params[field_name] = media_file
-                ct = data.get("content_type")
-                effective_parse = ct or parse_mode
-                caption_to_send = self._escape_text_by_parse_mode(caption, effective_parse) if effective_parse else caption
-                params["caption"] = caption_to_send
-                if ct is not None:
-                    params["parse_mode"] = ct
-                if parse_mode and not ct:
-                    params["parse_mode"] = parse_mode
-                return {"endpoint": endpoint, "params": params}
-            else:
-                text_to_send = full_text or " "
-                if parse_mode:
-                    text_to_send = self._escape_text_by_parse_mode(text_to_send, parse_mode)
-                params["text"] = text_to_send
-                if entities:
-                    params["entities"] = entities
-                if parse_mode:
-                    params["parse_mode"] = parse_mode
-                return {"endpoint": "sendMessage", "params": params}
+            if parse_mode:
+                params["parse_mode"] = parse_mode
+                if not rich_text:
+                    text = self._escape_text_by_parse_mode(text, parse_mode)
 
-        async def _upload_file_and_call_api(self, endpoint, field_name, file, **kwargs):
-            """上传文件并调用 API"""
-            if "content_type" in kwargs:
-                content_type = kwargs.pop("content_type")
-                if content_type is not None:
-                    kwargs["parse_mode"] = content_type
-                    if "caption" in kwargs:
-                        kwargs["caption"] = self._escape_text_by_parse_mode(kwargs["caption"], content_type)
+            params["text"] = text
 
-            if self._reply_message_id and "reply_to_message_id" not in kwargs:
-                try:
-                    kwargs["reply_to_message_id"] = int(self._reply_message_id)
-                except (ValueError, TypeError):
-                    pass
+            if parse_mode and entities:
+                entities = []
 
-            if self._protect_content:
-                kwargs["protect_content"] = "true"
-            if self._silent:
-                kwargs["disable_notification"] = "true"
+            if entities:
+                params["entities"] = entities
 
-            if self._inline_keyboard:
-                kwargs["reply_markup"] = json.dumps({"inline_keyboard": self._inline_keyboard})
+            return {"endpoint": "sendMessage", "params": params}
 
-            url = f"{self._adapter.base_url}/{endpoint}"
-            data = aiohttp.FormData()
-            data.add_field(
-                field_name, file,
-                filename=f"file.{field_name}",
-                content_type="application/octet-stream",
-            )
+        def _escape_text_by_parse_mode(self, text: str, mode: str) -> str:
+            if mode == "MarkdownV2":
+                return self._escape_markdown_v2(text)
+            if mode == "HTML":
+                return self._escape_html(text)
+            return text
 
-            for key, value in kwargs.items():
-                if isinstance(value, (dict, list)):
-                    data.add_field(key, json.dumps(value))
-                else:
-                    data.add_field(key, str(value))
-
-            async with self._adapter.session.post(url, data=data) as response:
-                raw_response = await response.json()
-                self._reset_modifiers()
-                return self._adapter._format_response(raw_response)
+    # ==================== 适配器主类 ====================
 
     def __init__(self, sdk):
         super().__init__()
@@ -628,9 +649,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.last_update_id = 0
         self._proxy_enabled = self.config.get("proxy_enabled", False)
-        self._proxy_config = (
-            self.config.get("proxy", {}) if self._proxy_enabled else None
-        )
+        self._proxy_config = self.config.get("proxy", {}) if self._proxy_enabled else None
         converter = TelegramConverter(self.token)
         self._converter = converter
         self.convert = converter.convert
@@ -706,7 +725,6 @@ class TelegramAdapter(sdk.BaseAdapter):
                     continue
 
                 updates = response.get("data")
-
                 if updates:
                     for update in updates:
                         update_id = update["update_id"]
@@ -747,10 +765,8 @@ class TelegramAdapter(sdk.BaseAdapter):
                     }
 
                 response_data = self._format_response(raw_response)
-
                 if "echo" in params:
                     response_data["echo"] = params["echo"]
-
                 return response_data
 
         except Exception as e:
@@ -774,9 +790,7 @@ class TelegramAdapter(sdk.BaseAdapter):
         if self._proxy_enabled and self._proxy_config:
             proxy_type = self._proxy_config.get("type")
             if proxy_type in ["socks5", "socks4"]:
-                proxy_type_enum = (
-                    ProxyType.SOCKS5 if proxy_type == "socks5" else ProxyType.SOCKS4
-                )
+                proxy_type_enum = ProxyType.SOCKS5 if proxy_type == "socks5" else ProxyType.SOCKS4
                 ssl_context = ssl.create_default_context(cafile=certifi.where())
                 connector = ProxyConnector(
                     proxy_type=proxy_type_enum,
@@ -807,25 +821,21 @@ class TelegramAdapter(sdk.BaseAdapter):
 
         self.logger.info("Telegram适配器已启动（polling 模式）")
 
-        await self.sdk.adapter.emit(
-            {
-                "type": "meta",
-                "detail_type": "connect",
-                "platform": "telegram",
-                "self": {"platform": "telegram", "user_id": self.bot_id},
-            }
-        )
+        await self.sdk.adapter.emit({
+            "type": "meta",
+            "detail_type": "connect",
+            "platform": "telegram",
+            "self": {"platform": "telegram", "user_id": self.bot_id},
+        })
 
     async def shutdown(self):
         """关闭适配器"""
-        await self.sdk.adapter.emit(
-            {
-                "type": "meta",
-                "detail_type": "disconnect",
-                "platform": "telegram",
-                "self": {"platform": "telegram", "user_id": self.bot_id},
-            }
-        )
+        await self.sdk.adapter.emit({
+            "type": "meta",
+            "detail_type": "disconnect",
+            "platform": "telegram",
+            "self": {"platform": "telegram", "user_id": self.bot_id},
+        })
 
         if self.poll_task:
             self.poll_task.cancel()
