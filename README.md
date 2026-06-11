@@ -1,160 +1,224 @@
-# Telegram 适配器模块
+# ErisPulse Telegram 适配器
 
-## 简介
-TelegramAdapter 是基于 [ErisPulse](https://github.com/ErisPulse/ErisPulse/) 架构的 Telegram 协议适配器，提供统一的事件处理和消息操作接口。整合了所有 Telegram 功能模块，支持文本、图片、视频、文件等多种类型消息的收发。
+基于 [ErisPulse](https://github.com/ErisPulse/ErisPulse/) 框架的 Telegram Bot API 适配器，支持多账号、多种消息类型收发和平台特有事件处理。
 
-## 使用示例
+## 安装
 
-### 初始化与事件处理
+```bash
+epsdk install TelegramAdapter
+```
+
+## 配置
+
+在 `config/config.toml` 中添加：
+
+```toml
+[Telegram_Adapter.accounts.default]
+token = "YOUR_BOT_TOKEN"
+enabled = true
+
+# 多账号示例
+[Telegram_Adapter.accounts.bot2]
+token = "ANOTHER_BOT_TOKEN"
+enabled = true
+```
+
+### 配置字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `token` | string | 是 | Telegram Bot Token |
+| `bot_id` | string | 否 | 自动从 Token 提取，无需手动填写 |
+| `enabled` | bool | 否 | 是否启用（默认 true） |
+
+### 旧版配置兼容
+
+旧版单 token 格式仍可使用：
+
+```toml
+[Telegram_Adapter]
+token = "YOUR_BOT_TOKEN"
+```
+
+建议迁移到新格式以支持多账号。
+
+### 代理
+
+如需通过代理连接 Telegram API，请设置系统级代理环境变量（如 `ALL_PROXY`、`HTTPS_PROXY`）。
+
+## 快速开始
+
 ```python
 from ErisPulse import sdk
+from ErisPulse.Core.Event import command, message
+
+@command("hello")
+async def hello_handler(event):
+    await event.reply("Hello from Telegram!")
 
 async def main():
-    # 初始化 SDK
-    sdk.init()
-    
-    # 启动适配器
-    await sdk.adapter.startup()
-    
-    # 获取适配器实例
-    telegram = sdk.adapter.get("telegram")
-    
-    # 注册事件处理器
-    @telegram.on("message")
-    async def handle_message(data):
-        print(f"收到消息: {data}")
-        await telegram.Send.To("user", data["message"]["from"]["id"]).Text("已收到您的消息！")
-
-    @telegram.on("callback_query")
-    async def handle_callback_query(data):
-        print(f"收到回调查询: {data}")
-        await telegram.answer_callback_query(data["id"], "处理完成")
-
-    # 保持程序运行
-    await asyncio.Event().wait()
+    await sdk.run(keep_running=True)
 
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
 ```
 
-### 消息发送示例
+## 消息发送
+
+所有发送方法通过链式 DSL 调用：
+
 ```python
-# 发送纯文本消息
+telegram = sdk.adapter.get("telegram")
+
+# 文本消息
 await telegram.Send.To("user", "123456789").Text("Hello World!")
 
-# 发送Markdown格式消息
-await telegram.Send.To("user", "123456789").Markdown("*粗体文本*")
+# Markdown / HTML 格式
+await telegram.Send.To("group", "-1001234567890").Markdown("*粗体*")
+await telegram.Send.To("user", "123456789").Html("<b>粗体</b>")
 
-# 发送HTML格式消息
-await telegram.Send.To("user", "123456789").Html("<b>粗体文本</b>")
+# 媒体消息（支持 URL、file_id、bytes）
+await telegram.Send.To("user", "123456789").Image("https://example.com/photo.jpg")
+await telegram.Send.To("user", "123456789").Image(image_bytes, caption="图片说明")
 
-# 发送图片（需先读取为 bytes）
-with open("image.jpg", "rb") as f:
-    await telegram.Send.To("user", "123456789").Image(f.read(), caption="图片描述")
+# 贴纸
+await telegram.Send.To("user", "123456789").Sticker("CAACAgIAAxkBAA...")
 
-# 发送带格式说明的图片
-with open("image.jpg", "rb") as f:
-    await telegram.Send.To("user", "123456789").Image(f.read(), caption="*图片说明*", content_type="Markdown")
-
-# 发送视频
-with open("video.mp4", "rb") as f:
-    await telegram.Send.To("group", "987654321").Video(f.read(), caption="这是个视频")
-
-# 发送文件
-with open("document.docx", "rb") as f:
-    await telegram.Send.To("user", "123456789").Document(f.read(), caption="附件文件")
-
-# 编辑消息
-await telegram.Send.To("user", "123456789").Edit(123456, "修改后的内容")
-
-# 撤回消息
-await telegram.Send.To("user", "123456789").Recall(123456)
-
-# 检查消息是否存在
-exists = await telegram.Send.To("user", "123456789").CheckExist(123456)
+# 位置
+await telegram.Send.To("user", "123456789").Location(39.9042, 116.4074)
 ```
 
-## 配置说明
+### 链式修饰
 
-首次运行会生成配置，内容及解释如下：
+```python
+# @用户（通过 Telegram entities 实现）
+await telegram.Send.To("group", "-1001234567890").At("6117725680").Text("你好！")
 
-```toml
-# config.toml
-[Telegram_Adapter]
-token = "your_bot_token"
-proxy_enabled = false
-mode = "webhook"  # 或 "polling"
+# 回复消息
+await telegram.Send.To("group", "-1001234567890").Reply("12345").Text("回复内容")
 
-[Telegram_Adapter.proxy]
-host = "127.0.0.1"
-port = 1080
-type = "socks5"  # 支持 socks4/socks5
+# 内联键盘
+keyboard = [[{"text": "按钮1", "callback_data": "btn1"}]]
+await telegram.Send.To("group", "-1001234567890").Keyboard(keyboard).Text("请选择：")
 
-[Telegram_Adapter.webhook]
-path = "/telegram/webhook"
-domain = "yourdomain.com"  # 外部可访问域名
+# 保护内容 + 静默发送
+await telegram.Send.To("group", "-1001234567890").ProtectContent().Silent().Text("机密消息")
+```
+
+### 消息操作
+
+```python
+# 编辑消息
+await telegram.Send.To("user", "123456789").Edit(123, "新内容")
+
+# 撤回消息
+await telegram.Send.To("user", "123456789").Recall(123)
+
+# 转发消息
+await telegram.Send.To("user", "123456789").Forward(from_chat_id="-1001234567890", message_id=456)
+
+# 复制消息（不带来源）
+await telegram.Send.To("user", "123456789").CopyMessage(from_chat_id="-1001234567890", message_id=456)
+
+# 应答回调查询
+await telegram.Send.AnswerCallback("callback_query_id", text="已处理")
 ```
 
 ## 事件类型
-TelegramAdapter 支持以下事件类型的监听与处理：
 
-| 事件类型                     | 映射名称       | 说明                  |
-|------------------------------|----------------|-----------------------|
-| `message`                    | `message`      | 普通消息              |
-| `edited_message`             | `message_edit` | 消息被编辑            |
-| `channel_post`               | `channel_post` | 频道发布消息           |
-| `edited_channel_post`        | `channel_post_edit` | 频道消息被编辑     |
-| `inline_query`               | `inline_query` | 内联查询              |
-| `chosen_inline_result`       | `chosen_inline_result` | 内联结果被选择   |
-| `callback_query`             | `callback_query` | 回调查询（按钮点击） |
-| `shipping_query`             | `shipping_query` | 配送信息查询         |
-| `pre_checkout_query`         | `pre_checkout_query` | 支付预检查询       |
-| `poll`                       | `poll`         | 投票创建              |
-| `poll_answer`                | `poll_answer`  | 投票响应              |
+Telegram 事件转换遵循 OneBot12 标准，平台扩展使用 `telegram_` 前缀。
 
-## 通讯模式
-TelegramAdapter 支持两种通讯模式：
-- **Webhook**：使用 Telegram API 的 Webhook 机制，将消息推送到指定 URL。
-- **Polling**：使用 Telegram API 的 Polling 模式，通过轮询方式获取消息。
+### 消息事件
 
-> 如果你使用 Webhook 模式，请确保配置中包含以下字段：
->   ```toml
->   [Telegram_Adapter.webhook]
->   path = "/telegram/webhook"
->   domain = "yourdomain.com"
->   ```
+| Telegram 类型 | OB12 detail_type | 说明 |
+|---|---|---|
+| `message` / `edited_message` | `private` / `group` / `channel` | 私聊/群聊/频道消息 |
+| `channel_post` / `edited_channel_post` | `channel` | 频道消息 |
 
-> 如果你使用 Polling 模式，只需要填写 token 字段即可
+### 通知事件
 
+| detail_type | 说明 |
+|---|---|
+| `telegram_callback_query` | 回调查询（按钮点击） |
+| `telegram_poll` | 投票事件 |
+| `telegram_poll_answer` | 投票答案 |
+| `telegram_my_chat_member` | Bot 自身成员状态变更 |
+| `telegram_chat_member` | 聊天成员变更 |
 
-你可以选择性配置证书内容或路径：
-- 通过反向代理（如 Nginx/Caddy）处理 HTTPS
+### 请求事件
 
-## 代理设置（可选）
+| detail_type | 说明 |
+|---|---|
+| `telegram_inline_query` | 内联查询 |
+| `telegram_chat_join_request` | 加入聊天请求 |
+| `telegram_shipping_query` | 运费查询 |
+| `telegram_pre_checkout_query` | 预付款查询 |
 
-如果需要通过代理连接 Telegram API，可在配置中添加：
+### 消息段类型
 
-```toml
-[Telegram_Adapter]
-proxy_enabled = true
+| 类型 | 说明 |
+|---|---|
+| `text` | 纯文本 |
+| `mention` | @用户（`user_id`, `user_name`） |
+| `reply` | 回复引用 |
+| `image` | 图片 |
+| `video` | 视频 |
+| `voice` | 语音 |
+| `audio` | 音频 |
+| `file` | 文件 |
+| `location` | 位置 |
+| `telegram_sticker` | 贴纸（扩展） |
+| `telegram_animation` | GIF 动画（扩展） |
+| `telegram_contact` | 联系人（扩展） |
+| `telegram_inline_keyboard` | 内联键盘（扩展） |
 
-[Telegram_Adapter.proxy]
-host = "127.0.0.1"
-port = 1080
-type = "socks5"  # 支持 socks4/socks5
+## Event Mixin 方法
+
+适配器注册了以下平台专有方法（`platform == "telegram"` 时可用）：
+
+```python
+from ErisPulse.Core.Event import message
+
+@message.on_message()
+async def handle(event):
+    if event.get("platform") != "telegram":
+        return
+
+    # 消息属性
+    event.is_bot_message()        # 是否来自机器人
+    event.is_edited_message()     # 是否编辑过的消息
+    event.is_topic_message()      # 是否话题消息
+
+    # 聊天信息
+    event.get_chat_title()        # 聊天标题
+    event.get_chat_username()     # 聊天用户名
+    event.get_forward_from()      # 转发来源
+    event.get_topic_id()          # 话题 ID
+
+    # 回调查询
+    event.get_callback_data()     # callback_data
+    event.get_callback_id()       # callback_query_id
+
+    # 消息段数据
+    event.get_sticker_info()      # 贴纸信息
+    event.get_contact_info()      # 联系人信息
+    event.get_location()          # 位置信息
+    event.get_inline_keyboard()   # 内联键盘
 ```
 
-## 注意事项
-- 二进制内容（如图片、视频等）应以 `bytes` 形式传入；
-- 推荐使用反向代理处理 HTTPS 请求，避免手动管理 SSL 证书；
-- 所有格式化消息方法支持 `content_type` 参数，可选 "Markdown" 或 "HTML"；
-- 所有发送方法返回 `asyncio.Task` 对象，可以选择是否等待结果。
+## 运行模式
 
----
+仅支持 **Polling（长轮询）** 模式。每个账号独立轮询，支持多 Bot 并行运行。
+
+## 注意事项
+
+- 媒体内容支持 URL、file_id、bytes 三种输入方式
+- HTML 格式消息会自动清洗不支持的标签
+- 所有发送方法返回 `asyncio.Task` 对象，可选择是否 `await`
+- 会话类型映射：`private` → 发送时用 `user`，`group`/`supergroup` → `group`，`channel` → `channel`
 
 ## 参考链接
 
 - [ErisPulse 主库](https://github.com/ErisPulse/ErisPulse/)
 - [Telegram Bot API 官方文档](https://core.telegram.org/bots/api)
-- [ErisPulse 模块开发指南](https://github.com/ErisPulse/ErisPulse/tree/main/docs/DEVELOPMENT.md)
