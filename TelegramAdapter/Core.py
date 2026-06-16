@@ -14,14 +14,6 @@ from .Converter import TelegramConverter
 
 @dataclass
 class TelegramAccountConfig(BotAccountConfig):
-    bot_id: str = field(
-        default="",
-        metadata={
-            "description": "机器人ID（自动从Token提取，无需手动填写）",
-            "required": False,
-            "webui": {"widget": "text", "group": "basic", "order": 1},
-        },
-    )
     token: str = field(
         default="",
         metadata={
