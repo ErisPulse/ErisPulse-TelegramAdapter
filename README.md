@@ -1,4 +1,241 @@
-# ErisPulse Telegram 适配器
+# ErisPulse Telegram Adapter
+
+[English](#english) | [中文](#中文)
+
+---
+
+<a id="english"></a>
+
+## English
+
+A Telegram Bot API adapter for the [ErisPulse](https://github.com/ErisPulse/ErisPulse/) framework, supporting multi-account, multiple message types for sending/receiving, and platform-specific event handling.
+
+### Installation
+
+```bash
+epsdk install TelegramAdapter
+```
+
+### Configuration
+
+Add to `config/config.toml`:
+
+```toml
+[Telegram_Adapter.accounts.default]
+token = "YOUR_BOT_TOKEN"
+enabled = true
+
+# Multi-account example
+[Telegram_Adapter.accounts.bot2]
+token = "ANOTHER_BOT_TOKEN"
+enabled = true
+```
+
+#### Configuration Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `token` | string | Yes | Telegram Bot Token |
+| `bot_id` | string | No | Automatically extracted from the Token; no need to fill in manually |
+| `enabled` | bool | No | Whether to enable (default true) |
+
+#### Legacy Configuration Compatibility
+
+The legacy single-token format is still supported:
+
+```toml
+[Telegram_Adapter]
+token = "YOUR_BOT_TOKEN"
+```
+
+Migrating to the new format is recommended to support multi-account.
+
+#### Proxy
+
+If you need to connect to the Telegram API through a proxy, set system-level proxy environment variables (such as `ALL_PROXY`, `HTTPS_PROXY`).
+
+### Quick Start
+
+```python
+from ErisPulse import sdk
+from ErisPulse.Core.Event import command, message
+
+@command("hello")
+async def hello_handler(event):
+    await event.reply("Hello from Telegram!")
+
+async def main():
+    await sdk.run(keep_running=True)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+### Sending Messages
+
+All send methods are invoked via the chained DSL:
+
+```python
+telegram = sdk.adapter.get("telegram")
+
+# Text message
+await telegram.Send.To("user", "123456789").Text("Hello World!")
+
+# Markdown / HTML formats
+await telegram.Send.To("group", "-1001234567890").Markdown("*bold*")
+await telegram.Send.To("user", "123456789").Html("<b>bold</b>")
+
+# Media messages (supports URL, file_id, bytes)
+await telegram.Send.To("user", "123456789").Image("https://example.com/photo.jpg")
+await telegram.Send.To("user", "123456789").Image(image_bytes, caption="Image caption")
+
+# Sticker
+await telegram.Send.To("user", "123456789").Sticker("CAACAgIAAxkBAA...")
+
+# Location
+await telegram.Send.To("user", "123456789").Location(39.9042, 116.4074)
+```
+
+#### Chained Modifiers
+
+```python
+# @user (implemented via Telegram entities)
+await telegram.Send.To("group", "-1001234567890").At("6117725680").Text("Hello!")
+
+# Reply to message
+await telegram.Send.To("group", "-1001234567890").Reply("12345").Text("Reply content")
+
+# Inline keyboard
+keyboard = [[{"text": "Button 1", "callback_data": "btn1"}]]
+await telegram.Send.To("group", "-1001234567890").Keyboard(keyboard).Text("Please choose:")
+
+# Protect content + silent send
+await telegram.Send.To("group", "-1001234567890").ProtectContent().Silent().Text("Confidential message")
+```
+
+#### Message Operations
+
+```python
+# Edit message
+await telegram.Send.To("user", "123456789").Edit(123, "New content")
+
+# Recall message
+await telegram.Send.To("user", "123456789").Recall(123)
+
+# Forward message
+await telegram.Send.To("user", "123456789").Forward(from_chat_id="-1001234567890", message_id=456)
+
+# Copy message (without source)
+await telegram.Send.To("user", "123456789").CopyMessage(from_chat_id="-1001234567890", message_id=456)
+
+# Answer callback query
+await telegram.Send.AnswerCallback("callback_query_id", text="Processed")
+```
+
+### Event Types
+
+Telegram event conversion follows the OneBot12 standard, with platform extensions using the `telegram_` prefix.
+
+#### Message Events
+
+| Telegram Type | OB12 detail_type | Description |
+|---------------|------------------|-------------|
+| `message` / `edited_message` | `private` / `group` / `channel` | Private / group / channel message |
+| `channel_post` / `edited_channel_post` | `channel` | Channel message |
+
+#### Notice Events
+
+| detail_type | Description |
+|-------------|-------------|
+| `telegram_callback_query` | Callback query (button click) |
+| `telegram_poll` | Poll event |
+| `telegram_poll_answer` | Poll answer |
+| `telegram_my_chat_member` | Bot's own member status change |
+| `telegram_chat_member` | Chat member change |
+
+#### Request Events
+
+| detail_type | Description |
+|-------------|-------------|
+| `telegram_inline_query` | Inline query |
+| `telegram_chat_join_request` | Join chat request |
+| `telegram_shipping_query` | Shipping query |
+| `telegram_pre_checkout_query` | Pre-checkout query |
+
+#### Message Segment Types
+
+| Type | Description |
+|------|-------------|
+| `text` | Plain text |
+| `mention` | @user (`user_id`, `user_name`) |
+| `reply` | Reply reference |
+| `image` | Image |
+| `video` | Video |
+| `voice` | Voice |
+| `audio` | Audio |
+| `file` | File |
+| `location` | Location |
+| `telegram_sticker` | Sticker (extension) |
+| `telegram_animation` | GIF animation (extension) |
+| `telegram_contact` | Contact (extension) |
+| `telegram_inline_keyboard` | Inline keyboard (extension) |
+
+### Event Mixin Methods
+
+The adapter registers the following platform-specific methods (available when `platform == "telegram"`):
+
+```python
+from ErisPulse.Core.Event import message
+
+@message.on_message()
+async def handle(event):
+    if event.get("platform") != "telegram":
+        return
+
+    # Message attributes
+    event.is_bot_message()        # Whether from a bot
+    event.is_edited_message()     # Whether an edited message
+    event.is_topic_message()      # Whether a topic message
+
+    # Chat info
+    event.get_chat_title()        # Chat title
+    event.get_chat_username()     # Chat username
+    event.get_forward_from()      # Forward source
+    event.get_topic_id()          # Topic ID
+
+    # Callback query
+    event.get_callback_data()     # callback_data
+    event.get_callback_id()       # callback_query_id
+
+    # Message segment data
+    event.get_sticker_info()      # Sticker info
+    event.get_contact_info()      # Contact info
+    event.get_location()          # Location info
+    event.get_inline_keyboard()   # Inline keyboard
+```
+
+### Run Mode
+
+Only **Polling (long polling)** mode is supported. Each account polls independently, supporting parallel multi-Bot operation.
+
+### Notes
+
+- Media content supports three input methods: URL, file_id, and bytes
+- HTML-format messages automatically sanitize unsupported tags
+- All send methods return `asyncio.Task` objects; awaiting is optional
+- Session type mapping: `private` → use `user` when sending, `group`/`supergroup` → `group`, `channel` → `channel`
+
+### References
+
+- [ErisPulse Main Repository](https://github.com/ErisPulse/ErisPulse/)
+- [Telegram Bot API Official Documentation](https://core.telegram.org/bots/api)
+
+---
+
+<a id="中文"></a>
+
+## 中文
 
 基于 [ErisPulse](https://github.com/ErisPulse/ErisPulse/) 框架的 Telegram Bot API 适配器，支持多账号、多种消息类型收发和平台特有事件处理。
 
