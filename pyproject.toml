@@ -1,6 +1,6 @@
 [project]
 name = "ErisPulse-TelegramAdapter"
-version = "4.0.1"
+version = "4.1.0"
 description = "ErisPulse的Telegram协议适配模块"
 readme = "README.md"
 requires-python = ">=3.10"

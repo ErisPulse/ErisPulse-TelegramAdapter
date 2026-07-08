@@ -9,6 +9,7 @@ from ErisPulse.Core import client
 from ErisPulse.Core.Bases.adapter import BaseAdapter
 from ErisPulse.runtime.config_schema import BotAccountConfig
 from ErisPulse.Core.Event import register_event_mixin, unregister_platform_event_methods
+from ErisPulse.Core.i18n import i18n
 from .Converter import TelegramConverter
 
 
@@ -17,12 +18,25 @@ class TelegramAccountConfig(BotAccountConfig):
     token: str = field(
         default="",
         metadata={
-            "description": "Telegram Bot Token",
+            "description": {"i18n": "telegram.token", "default": "Telegram Bot Token"},
             "required": True,
             "secret": True,
-            "webui": {"widget": "password", "group": "basic", "order": 2},
+            "ui": {
+                "widget": "password",
+                "group": "basic",
+                "order": 2,
+                "placeholder": {"i18n": "telegram.token.ph", "default": "请输入 Telegram Bot Token"},
+            },
         },
     )
+
+
+# 分组显示名（Dashboard 分区标题）
+TelegramAccountConfig._schema_meta = {
+    "group_labels": {
+        "basic": {"i18n": "telegram.group.basic", "default": "基本设置"},
+    }
+}  # type: ignore[attr-defined]
 
 
 class TelegramEventMixin:
@@ -621,8 +635,77 @@ class TelegramAdapter(BaseAdapter):
         super().__init__(sdk_ref)
         self._poll_tasks: Dict[str, asyncio.Task] = {}
         self._converters: Dict[str, TelegramConverter] = {}
+        self._bot_ids: Dict[str, str] = {}
         self._running = False
+        self._register_i18n()
         self._register_event_methods()
+
+    def _register_i18n(self):
+        """注册配置字段与日志消息的 i18n 翻译"""
+        try:
+            from ErisPulse.runtime.config_schema import register_config_i18n
+            register_config_i18n(TelegramAccountConfig, "zh-CN", domain="telegram")
+            register_config_i18n(TelegramAccountConfig, "en", {
+                "telegram.token": "Telegram Bot Token",
+                "telegram.token.ph": "Enter your Telegram Bot Token",
+                "telegram.group.basic": "Basic Settings",
+            }, domain="telegram")
+        except Exception:
+            pass
+
+        zh_CN = {
+            "telegram.bot_id_pending": "待确认",
+            "telegram.old_config_detected": "检测到旧格式配置，建议迁移到新格式",
+            "telegram.migration_guide": "迁移方法：将现有配置移动到 Telegram_Adapter.accounts.default 下",
+            "telegram.temp_loaded_old_config": "已临时加载旧配置为默认bot，请尽快迁移到新格式",
+            "telegram.no_config_create_default": "未找到配置文件，创建默认bot配置",
+            "telegram.save_default_failed": "保存默认bot配置失败: {error}",
+            "telegram.missing_token": "Bot {name} 缺少token配置，已跳过",
+            "telegram.accounts_loaded": "Telegram适配器初始化完成，共加载 {count} 个机器人",
+            "telegram.register_event_methods_failed": "注册Telegram事件扩展方法失败: {error}",
+            "telegram.api_unexpected_format": "API 返回了意外格式: {type}",
+            "telegram.api_request": "Telegram API请求: {url}",
+            "telegram.api_response": "Telegram API响应: {response}",
+            "telegram.api_call_failed": "调用Telegram API失败: {error}",
+            "telegram.api_error": "API调用失败: {error}",
+            "telegram.fetch_updates_failed": "Bot {name} 获取更新失败: {message}",
+            "telegram.poll_updates_failed": "Bot {name} 轮询更新失败: {error}",
+            "telegram.bot_started_polling": "Bot {name} (bot_id: {bot_id}) 已启动（polling模式）",
+            "telegram.adapter_started": "Telegram适配器启动完成，共 {count} 个机器人",
+            "telegram.adapter_shutdown": "Telegram适配器已关闭",
+        }
+        en = {
+            "telegram.bot_id_pending": "pending",
+            "telegram.old_config_detected": "Old config format detected, please migrate to the new format",
+            "telegram.migration_guide": "To migrate: move existing config under Telegram_Adapter.accounts.default",
+            "telegram.temp_loaded_old_config": "Temporarily loaded old config as default bot, please migrate ASAP",
+            "telegram.no_config_create_default": "No config found, creating default bot config",
+            "telegram.save_default_failed": "Failed to save default bot config: {error}",
+            "telegram.missing_token": "Bot {name} missing token config, skipped",
+            "telegram.accounts_loaded": "Telegram adapter initialized, loaded {count} bot(s)",
+            "telegram.register_event_methods_failed": "Failed to register Telegram event methods: {error}",
+            "telegram.api_unexpected_format": "API returned unexpected format: {type}",
+            "telegram.api_request": "Telegram API request: {url}",
+            "telegram.api_response": "Telegram API response: {response}",
+            "telegram.api_call_failed": "Telegram API call failed: {error}",
+            "telegram.api_error": "API call failed: {error}",
+            "telegram.fetch_updates_failed": "Bot {name} failed to fetch updates: {message}",
+            "telegram.poll_updates_failed": "Bot {name} poll updates failed: {error}",
+            "telegram.bot_started_polling": "Bot {name} (bot_id: {bot_id}) started (polling mode)",
+            "telegram.adapter_started": "Telegram adapter started, {count} bot(s) total",
+            "telegram.adapter_shutdown": "Telegram adapter shut down",
+        }
+        try:
+            i18n.register("zh-CN", zh_CN, domain="telegram")
+            i18n.register("en", en, domain="telegram")
+        except Exception:
+            pass
+
+    def _get_bot_id(self, account_name: str) -> str:
+        return self._bot_ids.get(account_name, "")
+
+    def _bot_id_display(self, account_name: str) -> str:
+        return self._bot_ids.get(account_name, i18n.t("telegram.bot_id_pending", default="待确认"))
 
     def _get_config_key(self) -> str:
         return "Telegram_Adapter"
@@ -637,9 +720,9 @@ class TelegramAdapter(BaseAdapter):
         if not data:
             old_config = config_mgr.getConfig("Telegram_Adapter")
             if old_config and "token" in old_config:
-                self.logger.warning("检测到旧格式配置，建议迁移到新格式")
+                self.logger.warning(i18n.t("telegram.old_config_detected", default="检测到旧格式配置，建议迁移到新格式"))
                 self.logger.warning(
-                    "迁移方法：将现有配置移动到 Telegram_Adapter.accounts.default 下"
+                    i18n.t("telegram.migration_guide", default="迁移方法：将现有配置移动到 Telegram_Adapter.accounts.default 下")
                 )
                 data = {
                     "default": {
@@ -648,10 +731,10 @@ class TelegramAdapter(BaseAdapter):
                     }
                 }
                 self.logger.warning(
-                    "已临时加载旧配置为默认bot，请尽快迁移到新格式"
+                    i18n.t("telegram.temp_loaded_old_config", default="已临时加载旧配置为默认bot，请尽快迁移到新格式")
                 )
             else:
-                self.logger.info("未找到配置文件，创建默认bot配置")
+                self.logger.info(i18n.t("telegram.no_config_create_default", default="未找到配置文件，创建默认bot配置"))
                 data = {
                     "default": {
                         "token": "",
@@ -661,38 +744,35 @@ class TelegramAdapter(BaseAdapter):
                 try:
                     config_mgr.setConfig(key, data)
                 except Exception as e:
-                    self.logger.error(f"保存默认bot配置失败: {str(e)}")
+                    self.logger.error(i18n.t("telegram.save_default_failed", error=str(e), default="保存默认bot配置失败: {error}"))
 
         accounts = {}
         for name, account_data in data.items():
             if not isinstance(account_data, dict):
                 continue
             if "token" not in account_data or not account_data["token"]:
-                self.logger.error(f"Bot {name} 缺少token配置，已跳过")
+                self.logger.error(i18n.t("telegram.missing_token", name=name, default="Bot {name} 缺少token配置，已跳过"))
                 continue
 
             instance = dict_to_dataclass(TelegramAccountConfig, account_data)
             instance.name = name
 
-            if not instance.bot_id and instance.token and ":" in instance.token:
-                instance.bot_id = instance.token.split(":")[0]
-
             accounts[name] = instance
 
-        self.logger.info(f"Telegram适配器初始化完成，共加载 {len(accounts)} 个机器人")
+        self.logger.info(i18n.t("telegram.accounts_loaded", count=len(accounts), default="Telegram适配器初始化完成，共加载 {count} 个机器人"))
         return accounts
 
     def _register_event_methods(self):
         try:
             pass
         except Exception as e:
-            self.logger.warning(f"注册Telegram事件扩展方法失败: {e}")
+            self.logger.warning(i18n.t("telegram.register_event_methods_failed", error=e, default="注册Telegram事件扩展方法失败: {error}"))
 
     def _format_telegram_response(self, raw_response: dict) -> dict:
         if not isinstance(raw_response, dict):
             return self.make_error(
                 retcode=34000,
-                message=f"API 返回了意外格式: {type(raw_response)}",
+                message=i18n.t("telegram.api_unexpected_format", type=type(raw_response), default="API 返回了意外格式: {type}"),
                 raw=raw_response,
             )
 
@@ -720,13 +800,13 @@ class TelegramAdapter(BaseAdapter):
             resp = await client.post(url, json=params)
             raw_response = await resp.json()
 
-            self.logger.debug(f"Telegram API请求: {url}")
-            self.logger.debug(f"Telegram API响应: {raw_response}")
+            self.logger.debug(i18n.t("telegram.api_request", url=url, default="Telegram API请求: {url}"))
+            self.logger.debug(i18n.t("telegram.api_response", response=raw_response, default="Telegram API响应: {response}"))
 
             if not isinstance(raw_response, dict):
                 error_resp = self.make_error(
                     retcode=34000,
-                    message=f"API 返回了意外格式: {type(raw_response)}",
+                    message=i18n.t("telegram.api_unexpected_format", type=type(raw_response), default="API 返回了意外格式: {type}"),
                     raw=raw_response,
                 )
                 if echo:
@@ -739,10 +819,10 @@ class TelegramAdapter(BaseAdapter):
             return response
 
         except Exception as e:
-            self.logger.error(f"调用Telegram API失败: {str(e)}")
+            self.logger.error(i18n.t("telegram.api_call_failed", error=str(e), default="调用Telegram API失败: {error}"))
             error_resp = self.make_error(
                 retcode=33001,
-                message=f"API调用失败: {str(e)}",
+                message=i18n.t("telegram.api_error", error=str(e), default="API调用失败: {error}"),
                 raw=None,
             )
             if echo:
@@ -762,7 +842,7 @@ class TelegramAdapter(BaseAdapter):
                 response = await self.call_api("getUpdates", _account_id=account_name, offset=offset, timeout=60)
 
                 if response.get("status") != "ok":
-                    self.logger.error(f"Bot {account_name} 获取更新失败: {response.get('message')}")
+                    self.logger.error(i18n.t("telegram.fetch_updates_failed", name=account_name, message=response.get('message'), default="Bot {name} 获取更新失败: {message}"))
                     await asyncio.sleep(5)
                     continue
 
@@ -781,7 +861,7 @@ class TelegramAdapter(BaseAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                self.logger.error(f"Bot {account_name} 轮询更新失败: {e}")
+                self.logger.error(i18n.t("telegram.poll_updates_failed", name=account_name, error=e, default="Bot {name} 轮询更新失败: {error}"))
                 await asyncio.sleep(5)
 
     async def start(self):
@@ -791,22 +871,29 @@ class TelegramAdapter(BaseAdapter):
             converter = TelegramConverter(account.token)
             self._converters[account_name] = converter
 
+            bot_id = converter.bot_id
             try:
                 me = await self.call_api("getMe", _account_id=account_name)
                 if me.get("status") == "ok" and isinstance(me.get("data"), dict):
-                    converter._bot_username = me["data"].get("username", "")
+                    me_data = me["data"]
+                    bot_id = str(me_data.get("id", "")) or bot_id
+                    converter._bot_username = me_data.get("username", "")
             except Exception:
                 pass
 
-            await self.emit_meta("connect", account.bot_id)
+            if bot_id:
+                converter.bot_id = bot_id
+                self._bot_ids[account_name] = bot_id
+
+            await self.emit_meta("connect", bot_id)
             self._poll_tasks[account_name] = asyncio.create_task(
                 self._poll_updates(account_name)
             )
             self.logger.info(
-                f"Bot {account_name} (bot_id: {account.bot_id}) 已启动（polling模式）"
+                i18n.t("telegram.bot_started_polling", name=account_name, bot_id=self._bot_id_display(account_name), default="Bot {name} (bot_id: {bot_id}) 已启动（polling模式）")
             )
 
-        self.logger.info(f"Telegram适配器启动完成，共 {len(self.enabled_accounts)} 个机器人")
+        self.logger.info(i18n.t("telegram.adapter_started", count=len(self.enabled_accounts), default="Telegram适配器启动完成，共 {count} 个机器人"))
 
     async def shutdown(self):
         self._running = False
@@ -820,7 +907,7 @@ class TelegramAdapter(BaseAdapter):
 
         for account_name, account in self.enabled_accounts.items():
             try:
-                await self.emit_meta("disconnect", account.bot_id)
+                await self.emit_meta("disconnect", self._get_bot_id(account_name))
             except Exception:
                 pass
 
@@ -829,4 +916,4 @@ class TelegramAdapter(BaseAdapter):
         except Exception:
             pass
 
-        self.logger.info("Telegram适配器已关闭")
+        self.logger.info(i18n.t("telegram.adapter_shutdown", default="Telegram适配器已关闭"))

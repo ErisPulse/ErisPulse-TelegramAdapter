@@ -33,6 +33,21 @@
 
 ---
 
+## [4.1.0] - 2026/07/08
+
+### 修复
+
+- 修复 `TelegramAccountConfig` 未声明 `bot_id` 字段导致启动报错 `'TelegramAccountConfig' object has no attribute 'bot_id'` 的问题
+  - `bot_id` 不再写入配置 dataclass，改为运行时从 `getMe` 响应中获取并存储于 `_bot_ids` 字典
+  - `emit_meta`（connect/disconnect）与日志输出改用 `_get_bot_id()` / `_bot_id_display()` 辅助方法
+
+### 变更
+
+- 配置字段 metadata 迁移至新格式：`description` 支持 i18n（`{"i18n": ..., "default": ...}`），`webui` 键更名 `ui`
+- 新增 `_schema_meta.group_labels` 分组显示名（Dashboard 分区标题）
+- 启动时通过 `register_config_i18n` 注册中英文翻译
+- **全面国际化**：所有日志/错误消息通过 `i18n.t()` 输出，注册 zh-CN/en 双语翻译
+
 ## [3.5.0] - 2026/02/12
 
 ### 新增
