@@ -414,6 +414,7 @@ class TelegramAdapter(BaseAdapter):
             self._inline_keyboard = None
             self._protect_content = False
             self._silent = False
+            self._keyboard_rows = None
 
         def _apply_common_params(self, params: dict):
             if self._reply_message_id:
