@@ -223,6 +223,10 @@ class TelegramConverter(BaseConverter):
         base_event["telegram_inline_message_id"] = callback.get("inline_message_id")
         base_event["telegram_chat_instance"] = callback.get("chat_instance", "")
 
+        # 跨平台交互组件标准字段（见 docs/zh-CN/standards/interactive-components.md）
+        base_event["interaction_id"] = str(callback.get("id", ""))
+        base_event["button_data"] = str(callback.get("data", ""))
+
         if "message" in callback:
             msg = callback["message"]
             base_event["message_id"] = str(msg.get("message_id", ""))

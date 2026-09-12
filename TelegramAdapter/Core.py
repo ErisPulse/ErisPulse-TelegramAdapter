@@ -320,9 +320,46 @@ class TelegramAdapter(BaseAdapter):
             self._reply_message_id = message_id
             return self
 
-        def Keyboard(self, inline_keyboard: list):
-            self._inline_keyboard = inline_keyboard
+        def Keyboard(self, inline_keyboard):
+            """
+            附加内联键盘
+
+            :param inline_keyboard: 兼容两种输入：
+                - 通用标准结构：[[{"label": "..", "type": "callback|link", "data": ".."}]]
+                - 原生结构：[[{"text": "..", "callback_data": ".."} 或 {"text": "..", "url": ".."}]]
+            :return: Send 实例，支持链式调用
+
+            :example:
+            >>> rows = [[{"label": "选项A", "type": "callback", "data": "vote:A"}]]
+            >>> await telegram.Send.To("group", chat_id).Keyboard(rows).Text("请选择")
+            """
+            self._inline_keyboard = self._normalize_keyboard(inline_keyboard)
             return self
+
+        @staticmethod
+        def _normalize_keyboard(keyboard):
+            """通用 rows 结构 → TG inline_keyboard；原生结构原样透传（向后兼容）"""
+            if not isinstance(keyboard, list):
+                return keyboard
+            try:
+                return [
+                    [TelegramAdapter.Send._normalize_tg_button(b) for b in row]
+                    for row in keyboard
+                ]
+            except (TypeError, AttributeError):
+                return keyboard
+
+        @staticmethod
+        def _normalize_tg_button(b):
+            """单个按钮：通用 {label,type,data} → {text, callback_data|url}；原生透传"""
+            if not isinstance(b, dict):
+                return b
+            if "text" in b and ("callback_data" in b or "url" in b):
+                return b  # 原生结构
+            label = b.get("label", "")
+            if b.get("type") == "link":
+                return {"text": label, "url": b.get("data", "")}
+            return {"text": label, "callback_data": b.get("data", "")}
 
         def ProtectContent(self, protect: bool = True):
             self._protect_content = protect
@@ -546,6 +583,17 @@ class TelegramAdapter(BaseAdapter):
 
                 elif seg_type == "telegram_inline_keyboard":
                     self._inline_keyboard = data.get("inline_keyboard", [])
+
+                elif seg_type == "keyboard":
+                    # 标准 keyboard 段（跨平台通用）→ inline_keyboard
+                    rows = data.get("rows", [])
+                    self._inline_keyboard = [
+                        [
+                            self._normalize_tg_button(b)
+                            for b in row
+                        ]
+                        for row in rows
+                    ]
 
             for user_id in self._at_user_ids:
                 self._add_mention_entity(entities, text_parts, user_id, f"@{user_id}")
