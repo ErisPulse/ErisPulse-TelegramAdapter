@@ -2,8 +2,10 @@ import time
 from typing import Dict, Optional, List
 import uuid
 
+from ErisPulse.Core.Bases import BaseConverter
 
-class TelegramConverter:
+
+class TelegramConverter(BaseConverter):
     """
     Telegram 事件转换器
 
@@ -15,9 +17,13 @@ class TelegramConverter:
     2. 明确扩展：平台特有功能必须添加 telegram_ 前缀
     3. 数据完整：原始事件数据必须保留在 telegram_raw 字段中
     4. 时间统一：所有时间戳必须转换为 10 位 Unix 时间戳（秒级）
+
+    继承 BaseConverter，公共字段（id/time/platform/self/raw）由 build_base_event
+    构建后按 Telegram update 语义覆盖（id=update_id、self.user_id=bot_id）。
     """
 
     def __init__(self, token: str):
+        super().__init__(platform="telegram")
         self.token = token
         self.bot_id = token.split(":")[0] if token and ":" in token else ""
         self._bot_username = ""
@@ -72,20 +78,14 @@ class TelegramConverter:
     def _create_base_event(
         self, raw_event: Dict, update_id: int, event_type: str, raw_type: str
     ) -> Dict:
-        """创建基础事件结构"""
-        return {
-            "id": str(update_id),
-            "time": int(time.time()),
-            "type": event_type,
-            "detail_type": "",
-            "platform": "telegram",
-            "self": {
-                "platform": "telegram",
-                "user_id": self.bot_id,
-            },
-            "telegram_raw": raw_event,
-            "telegram_raw_type": raw_type,
-        }
+        """创建基础事件结构（BaseConverter 骨架 + Telegram 语义覆盖）"""
+        base_event = self.build_base_event(raw_event, raw_type)
+        base_event["id"] = str(update_id)
+        base_event["time"] = int(time.time())
+        base_event["type"] = event_type
+        base_event["detail_type"] = ""
+        base_event["self"]["user_id"] = self.bot_id
+        return base_event
 
     def _create_unknown_event(self, raw_event: Dict, update_id: int) -> Dict:
         """创建未知事件"""
@@ -95,17 +95,14 @@ class TelegramConverter:
                 unknown_type = key
                 break
 
-        return {
-            "id": str(update_id),
-            "time": int(time.time()),
-            "type": "unknown",
-            "platform": "telegram",
-            "self": {"platform": "telegram", "user_id": ""},
-            "telegram_raw": raw_event,
-            "telegram_raw_type": unknown_type,
-            "warning": f"Unsupported event type: {unknown_type}",
-            "alt_message": "This event type is not supported by this system.",
-        }
+        base_event = self.build_base_event(raw_event, unknown_type)
+        base_event["id"] = str(update_id)
+        base_event["time"] = int(time.time())
+        base_event["type"] = "unknown"
+        base_event["self"]["user_id"] = ""
+        base_event["warning"] = f"Unsupported event type: {unknown_type}"
+        base_event["alt_message"] = "This event type is not supported by this system."
+        return base_event
 
     def _detect_event_type(self, raw_event: Dict) -> tuple:
         """检测事件类型"""
@@ -379,6 +376,12 @@ class TelegramConverter:
         base_event["user_id"] = str(user.get("id", ""))
         base_event["user_nickname"] = self._get_user_name(user)
         base_event["comment"] = request.get("invite_link", {}).get("name", "")
+
+        # Telegram Bot API 无原生请求ID，按 (chat, user, date) 生成确定性标识
+        chat_id = str(chat.get("id", ""))
+        request_date = request.get("date", 0)
+        base_event["request_id"] = f"tjr_{chat_id}_{user.get('id', '')}_{request_date}"
+        base_event["telegram_chat_id"] = chat_id
 
         base_event["telegram_chat_join_request_id"] = request.get(
             "chat_join_request_id", ""

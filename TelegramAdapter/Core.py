@@ -7,10 +7,20 @@ from typing import Dict, List, Any, Optional, Union
 
 from ErisPulse.Core import client
 from ErisPulse.Core.Bases.adapter import BaseAdapter
-from ErisPulse.runtime.config_schema import BotAccountConfig
+from ErisPulse.Core.Bases import BotAccountConfig
 from ErisPulse.Core.Event import register_event_mixin, unregister_platform_event_methods
 from ErisPulse.Core.i18n import i18n
 from .Converter import TelegramConverter
+
+try:
+    from ErisPulse.runtime.tasks import spawn_background
+except ImportError:  # pragma: no cover
+    spawn_background = None
+
+__version__ = "4.2.0"
+
+# 软依赖的框架最低版本（运行时检测，仅提示不强制）
+MIN_FRAMEWORK_VERSION = (2, 7, 1)
 
 
 @dataclass
@@ -115,11 +125,8 @@ class TelegramAdapter(BaseAdapter):
 
     class Send(BaseAdapter.Send):
 
-        def __init__(self, adapter, target_type=None, target_id=None, account_id=None):
-            super().__init__(adapter, target_type, target_id, account_id)
-            self._at_user_ids = []
-            self._reply_message_id = None
-            self._at_all = False
+        def __init__(self, adapter, target_type=None, target_id=None, account_id=None, rules=None):
+            super().__init__(adapter, target_type, target_id, account_id, rules)
             self._inline_keyboard = None
             self._protect_content = False
             self._silent = False
@@ -278,13 +285,17 @@ class TelegramAdapter(BaseAdapter):
             async def _send():
                 converted = await self._convert_ob12_to_telegram(message, **kwargs)
                 if isinstance(converted, dict):
-                    return await self._do_send(converted)
+                    result = await self._do_send(converted)
+                    self._adapter._register_outbound_message(result, self.send_context)
+                    return result
                 elif isinstance(converted, list):
                     results = []
                     for call in converted:
                         results.append(await self._do_send(call))
                     self._reset_modifiers()
-                    return results[-1] if results else None
+                    result = results[-1] if results else None
+                    self._adapter._register_outbound_message(result, self.send_context)
+                    return result
 
             return asyncio.create_task(_send())
 
@@ -631,14 +642,226 @@ class TelegramAdapter(BaseAdapter):
                 return self._escape_html(text)
             return text
 
+    class Api(BaseAdapter.Api):
+        """
+        Telegram 标准 API 动作实现（ApiDSL）
+
+        将 OB12 标准动作映射到 Telegram Bot API，并标准化 data 字段。
+
+        {!--< tips >!--}
+        1. get_self_info → getMe
+        2. get_user_info / get_group_info → getChat（Telegram 无独立用户信息API）
+        3. get_group_member_info → getChatMember
+        4. delete_message → deleteMessage（自动按消息登记表补全 chat_id）
+        5. leave_group → leaveChat
+        6. 不支持的动作（如 get_friend_list / get_group_list）返回 retcode=10002
+        {!--< /tips >!--}
+        """
+
+        async def get_self_info(self) -> dict:
+            r = await self._adapter.call_api("getMe", _account_id=self._account_id)
+            if r.get("status") != "ok":
+                return r
+            u = r.get("data") or {}
+            r["data"] = {
+                "user_id": str(u.get("id", "")),
+                "user_name": u.get("username", ""),
+                "user_displayname": " ".join(
+                    filter(None, [u.get("first_name", ""), u.get("last_name", "")])
+                ),
+            }
+            return r
+
+        async def get_user_info(self, user_id: str) -> dict:
+            return await self._get_chat_info(user_id, is_group=False)
+
+        async def get_group_info(self, group_id: str) -> dict:
+            return await self._get_chat_info(group_id, is_group=True)
+
+        async def get_group_member_info(self, group_id: str, user_id: str) -> dict:
+            r = await self._adapter.call_api(
+                "getChatMember", _account_id=self._account_id,
+                chat_id=int(group_id) if str(group_id).lstrip("-").isdigit() else group_id,
+                user_id=int(user_id) if str(user_id).isdigit() else user_id,
+            )
+            if r.get("status") != "ok":
+                return r
+            m = r.get("data") or {}
+            u = m.get("user", {}) or {}
+            r["data"] = {
+                "user_id": str(u.get("id", "")),
+                "user_name": u.get("username", ""),
+                "user_displayname": " ".join(
+                    filter(None, [u.get("first_name", ""), u.get("last_name", "")])
+                ),
+                "telegram_role": m.get("status", ""),
+            }
+            return r
+
+        async def get_group_admin_list(self, group_id: str) -> dict:
+            """获取群管理员列表（扩展动作）"""
+            r = await self._adapter.call_api(
+                "getChatAdministrators", _account_id=self._account_id,
+                chat_id=int(group_id) if str(group_id).lstrip("-").isdigit() else group_id,
+            )
+            if r.get("status") != "ok":
+                return r
+            admins = []
+            for m in r.get("data") or []:
+                u = m.get("user", {}) or {}
+                admins.append({
+                    "user_id": str(u.get("id", "")),
+                    "user_name": u.get("username", ""),
+                    "user_displayname": " ".join(
+                        filter(None, [u.get("first_name", ""), u.get("last_name", "")])
+                    ),
+                    "telegram_role": m.get("status", ""),
+                })
+            r["data"] = admins
+            return r
+
+        async def delete_message(self, message_id: str) -> dict:
+            return await self._ad_delete_message(str(message_id))
+
+        async def leave_group(self, group_id: str) -> dict:
+            return await self._adapter.call_api(
+                "leaveChat", _account_id=self._account_id,
+                chat_id=int(group_id) if str(group_id).lstrip("-").isdigit() else group_id,
+            )
+
+        async def get_chat_member_count(self, chat_id: str) -> dict:
+            """获取聊天成员数（扩展动作）"""
+            return await self._adapter.call_api(
+                "getChatMemberCount", _account_id=self._account_id,
+                chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
+            )
+
+        async def _get_chat_info(self, chat_id: str, *, is_group: bool) -> dict:
+            r = await self._adapter.call_api(
+                "getChat", _account_id=self._account_id,
+                chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
+            )
+            if r.get("status") != "ok":
+                return r
+            c = r.get("data") or {}
+            if is_group:
+                r["data"] = {
+                    "group_id": str(c.get("id", "")),
+                    "group_name": c.get("title", ""),
+                }
+            else:
+                r["data"] = {
+                    "user_id": str(c.get("id", "")),
+                    "user_name": c.get("username", ""),
+                    "user_displayname": " ".join(
+                        filter(None, [c.get("first_name", ""), c.get("last_name", "")])
+                    ),
+                }
+            return r
+
+        async def get_status(self) -> dict:
+            ad = self._adapter
+            bots = []
+            for name, bot_id in ad._bot_ids.items():
+                bots.append({
+                    "self": {"platform": ad.platform, "user_id": bot_id, "account_id": name},
+                    "online": ad._running and name in ad._poll_tasks,
+                })
+            return ad.make_response(data={"good": any(b["online"] for b in bots), "bots": bots})
+
+        async def get_version(self) -> dict:
+            from . import __version__
+
+            return self._adapter.make_response(
+                data={"impl": "ErisPulse-TelegramAdapter", "version": __version__, "onebot_version": "12"}
+            )
+
+        async def get_supported_actions(self) -> dict:
+            actions = {
+                "get_self_info", "get_user_info", "get_group_info", "get_group_member_info",
+                "delete_message", "leave_group", "get_status", "get_version",
+                "get_supported_actions", "get_group_admin_list", "get_chat_member_count",
+            }
+            return self._adapter.make_response(data=sorted(actions))
+
+    class Request(BaseAdapter.Request):
+        """
+        Telegram 请求操作 DSL
+
+        处理加群/进群申请（chat_join_request），基于
+        approveChatJoinRequest / declineChatJoinRequest 动作。
+        """
+
+        async def _do_accept(self, **kwargs) -> dict:
+            return await self._adapter._handle_chat_join_request(self._request_id, True, **kwargs)
+
+        async def _do_reject(self, **kwargs) -> dict:
+            return await self._adapter._handle_chat_join_request(self._request_id, False, **kwargs)
+
     def __init__(self, sdk_ref=None):
         super().__init__(sdk_ref)
         self._poll_tasks: Dict[str, asyncio.Task] = {}
         self._converters: Dict[str, TelegramConverter] = {}
         self._bot_ids: Dict[str, str] = {}
+        self._message_targets: Dict[str, str] = {}
+        self._pending_requests: Dict[str, dict] = {}
         self._running = False
         self._register_i18n()
         self._register_event_methods()
+        self._migrate_legacy_config()
+        self._check_framework_version()
+        self._get_logger().info(f"TelegramAdapter v{__version__} 已加载")
+
+    @staticmethod
+    def _parse_version(version_str: str) -> tuple:
+        """解析版本号为可比较的三元组（忽略 dev/预发布后缀，如 2.8.0-dev.3 → (2, 8, 0)）"""
+        parts = []
+        for piece in str(version_str).split("."):
+            digits = "".join(ch for ch in piece if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+
+    def _check_framework_version(self):
+        """软依赖检测：框架版本过低时打警告（不阻断加载）"""
+        try:
+            from importlib.metadata import version as _pkg_version
+
+            raw = _pkg_version("ErisPulse")
+        except Exception:
+            return
+        try:
+            if self._parse_version(raw) < MIN_FRAMEWORK_VERSION:
+                self._get_logger().warning(
+                    f"当前 ErisPulse 版本 {raw} 过低：TelegramAdapter v{__version__} 需要 >= "
+                    f"{'.'.join(map(str, MIN_FRAMEWORK_VERSION))}"
+                    "（BaseConverter / Api DSL / Request DSL / spawn_background 等特性），"
+                    "部分功能可能不可用，建议升级框架"
+                )
+        except Exception:
+            pass
+
+    def _migrate_legacy_config(self):
+        """将旧版扁平配置（[Telegram_Adapter] token=...）迁移到 accounts 结构"""
+        try:
+            from ErisPulse.Core import config as config_mgr
+
+            key = self._get_config_key()
+            data = config_mgr.getConfig(key)
+            if not isinstance(data, dict):
+                return
+            accounts = data.get("accounts")
+            if isinstance(accounts, dict) and accounts:
+                return
+            token = data.get("token")
+            if not token:
+                return
+            data["accounts"] = {"default": {"token": token, "enabled": True}}
+            config_mgr.setConfig(key, data)
+            self.logger.info("已将旧版扁平配置迁移到 accounts.default")
+        except Exception as e:
+            self.logger.debug(f"旧配置迁移检查跳过: {e}")
 
     def _register_i18n(self):
         """注册配置字段与日志消息的 i18n 翻译"""
@@ -710,63 +933,82 @@ class TelegramAdapter(BaseAdapter):
     def _get_config_key(self) -> str:
         return "Telegram_Adapter"
 
-    def _load_accounts(self) -> dict:
-        from ErisPulse.runtime.config_schema import dict_to_dataclass
-        from ErisPulse.Core.config import config as config_mgr
-
-        key = "Telegram_Adapter.accounts"
-        data = config_mgr.getConfig(key)
-
-        if not data:
-            old_config = config_mgr.getConfig("Telegram_Adapter")
-            if old_config and "token" in old_config:
-                self.logger.warning(i18n.t("telegram.old_config_detected", default="检测到旧格式配置，建议迁移到新格式"))
-                self.logger.warning(
-                    i18n.t("telegram.migration_guide", default="迁移方法：将现有配置移动到 Telegram_Adapter.accounts.default 下")
-                )
-                data = {
-                    "default": {
-                        "token": old_config.get("token", ""),
-                        "enabled": True,
-                    }
-                }
-                self.logger.warning(
-                    i18n.t("telegram.temp_loaded_old_config", default="已临时加载旧配置为默认bot，请尽快迁移到新格式")
-                )
-            else:
-                self.logger.info(i18n.t("telegram.no_config_create_default", default="未找到配置文件，创建默认bot配置"))
-                data = {
-                    "default": {
-                        "token": "",
-                        "enabled": True,
-                    }
-                }
-                try:
-                    config_mgr.setConfig(key, data)
-                except Exception as e:
-                    self.logger.error(i18n.t("telegram.save_default_failed", error=str(e), default="保存默认bot配置失败: {error}"))
-
-        accounts = {}
-        for name, account_data in data.items():
-            if not isinstance(account_data, dict):
-                continue
-            if "token" not in account_data or not account_data["token"]:
-                self.logger.error(i18n.t("telegram.missing_token", name=name, default="Bot {name} 缺少token配置，已跳过"))
-                continue
-
-            instance = dict_to_dataclass(TelegramAccountConfig, account_data)
-            instance.name = name
-
-            accounts[name] = instance
-
-        self.logger.info(i18n.t("telegram.accounts_loaded", count=len(accounts), default="Telegram适配器初始化完成，共加载 {count} 个机器人"))
-        return accounts
+    # 账户加载使用框架默认实现（AccountConfigClass 模板 + 校验），
+    # 旧版扁平配置迁移见 _migrate_legacy_config；空 token 账户在 start() 中跳过。
 
     def _register_event_methods(self):
         try:
             pass
         except Exception as e:
             self.logger.warning(i18n.t("telegram.register_event_methods_failed", error=e, default="注册Telegram事件扩展方法失败: {error}"))
+
+    # ==================== 消息/请求登记表 ====================
+
+    def _register_outbound_message(self, result: dict, send_context: dict):
+        """登记出站消息的 message_id → chat_id 映射（供 delete_message 使用）"""
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            return
+        msg_id = str(result.get("message_id", ""))
+        chat_id = str(send_context.get("target_id", ""))
+        if msg_id and chat_id:
+            self._message_targets[msg_id] = chat_id
+            while len(self._message_targets) > 800:
+                self._message_targets.pop(next(iter(self._message_targets)), None)
+
+    def _store_event_msg_id(self, event: dict):
+        """登记入站消息的 message_id → chat_id 映射（供 delete_message 使用）"""
+        msg_id = str(event.get("message_id", ""))
+        if not msg_id:
+            return
+        chat_id = event.get("group_id") or event.get("channel_id") or event.get("user_id", "")
+        if chat_id:
+            self._message_targets[msg_id] = str(chat_id)
+            while len(self._message_targets) > 800:
+                self._message_targets.pop(next(iter(self._message_targets)), None)
+
+    def _register_request(self, event: dict, account_name: str):
+        """登记请求事件上下文（供 Request DSL 审批使用）"""
+        request_id = str(event.get("request_id", ""))
+        if not request_id:
+            return
+        self._pending_requests[request_id] = {
+            "chat_id": event.get("telegram_chat_id") or event.get("group_id") or event.get("channel_id", ""),
+            "user_id": event.get("user_id", ""),
+            "account_name": account_name,
+        }
+        while len(self._pending_requests) > 500:
+            self._pending_requests.pop(next(iter(self._pending_requests)), None)
+
+    async def _handle_chat_join_request(
+        self, request_id: Optional[str], approve: bool, *, account_id: Optional[str] = None, **kwargs
+    ) -> dict:
+        """审批加群申请（approveChatJoinRequest / declineChatJoinRequest）"""
+        if not request_id:
+            return self.make_error(retcode=34001, message="缺少 request_id")
+        ctx = self._pending_requests.get(request_id)
+        if not ctx:
+            return self.make_error(retcode=34001, message=f"请求 {request_id} 不存在或已过期")
+        chat_id = ctx.get("chat_id", "")
+        user_id = ctx.get("user_id", "")
+        if not chat_id or not user_id:
+            return self.make_error(retcode=34003, message="请求上下文缺少 chat_id/user_id")
+        endpoint = "approveChatJoinRequest" if approve else "declineChatJoinRequest"
+        return await self.call_api(
+            endpoint, _account_id=account_id or ctx.get("account_name"),
+            chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
+            user_id=int(user_id) if str(user_id).isdigit() else user_id,
+        )
+
+    async def _ad_delete_message(self, message_id: str, account_id: Optional[str] = None) -> dict:
+        """按消息登记表撤回消息（deleteMessage 需要 chat_id + message_id）"""
+        chat_id = self._message_targets.get(message_id)
+        if not chat_id:
+            return self.make_error(retcode=34001, message=f"未找到消息 {message_id} 的目标上下文，无法撤回")
+        return await self.call_api(
+            "deleteMessage", _account_id=account_id,
+            chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
+            message_id=int(message_id) if str(message_id).isdigit() else message_id,
+        )
 
     def _format_telegram_response(self, raw_response: dict) -> dict:
         if not isinstance(raw_response, dict):
@@ -855,6 +1097,10 @@ class TelegramAdapter(BaseAdapter):
 
                         onebot_event = converter.convert(update)
                         if onebot_event:
+                            if onebot_event.get("type") == "message":
+                                self._store_event_msg_id(onebot_event)
+                            elif onebot_event.get("type") == "request":
+                                self._register_request(onebot_event, account_name)
                             from ErisPulse.Core import adapter as adapter_mgr
                             await adapter_mgr.emit(onebot_event)
                 await asyncio.sleep(1)
@@ -868,6 +1114,10 @@ class TelegramAdapter(BaseAdapter):
         self._running = True
 
         for account_name, account in self.enabled_accounts.items():
+            if not account.token:
+                self.logger.warning(i18n.t("telegram.missing_token", name=account_name, default="Bot {name} 缺少token配置，已跳过"))
+                continue
+
             converter = TelegramConverter(account.token)
             self._converters[account_name] = converter
 
@@ -886,8 +1136,10 @@ class TelegramAdapter(BaseAdapter):
                 self._bot_ids[account_name] = bot_id
 
             await self.emit_meta("connect", bot_id)
-            self._poll_tasks[account_name] = asyncio.create_task(
-                self._poll_updates(account_name)
+            coro = self._poll_updates(account_name)
+            # 生命周期任务使用 spawn_background（owner 归属，shutdown 自动回收）
+            self._poll_tasks[account_name] = (
+                spawn_background(coro) if spawn_background is not None else asyncio.create_task(coro)
             )
             self.logger.info(
                 i18n.t("telegram.bot_started_polling", name=account_name, bot_id=self._bot_id_display(account_name), default="Bot {name} (bot_id: {bot_id}) 已启动（polling模式）")
