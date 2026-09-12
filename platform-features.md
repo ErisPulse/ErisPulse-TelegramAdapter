@@ -1,4 +1,4 @@
-﻿# Telegram平台特性文档
+# Telegram平台特性文档
 
 TelegramAdapter 是基于 Telegram Bot API 构建的适配器，支持多种消息类型和事件处理。
 

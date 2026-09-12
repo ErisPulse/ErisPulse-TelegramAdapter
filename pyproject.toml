@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "ErisPulse-TelegramAdapter"
 version = "4.2.0"
 description = "ErisPulse的Telegram协议适配模块"
