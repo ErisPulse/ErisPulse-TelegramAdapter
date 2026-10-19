@@ -1,4 +1,5 @@
 import asyncio
+import html as _html
 import io
 import json
 import re
@@ -12,12 +13,75 @@ from ErisPulse.Core.Event import register_event_mixin, unregister_platform_event
 from ErisPulse.Core.i18n import i18n
 from .Converter import TelegramConverter
 
+
+def _forward_node_text(node: Dict) -> str:
+    """提取合并转发节点 content 中全部 text 段文本（段间直接连接）"""
+    data = node.get("data") or {}
+    return "".join(
+        str(seg.get("data", {}).get("text") or "")
+        for seg in (data.get("content") or [])
+        if isinstance(seg, dict) and seg.get("type") == "text"
+    )
+
+
+def _forward_nodes_plain(nodes, separator: str = "\n") -> str:
+    """合并转发节点降级纯文本：每条「昵称: 正文」"""
+    lines = []
+    for node in nodes if isinstance(nodes, list) else [nodes]:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") or {}
+        nickname = str(data.get("nickname") or "").strip()
+        text = _forward_node_text(node).strip()
+        if nickname and text:
+            lines.append(f"{nickname}: {text}")
+        elif text:
+            lines.append(text)
+    return separator.join(lines)
+
+
+def _tg_forward_quote_block(nickname: str, text: str) -> str:
+    header = f"<b>{_html.escape(nickname)}</b>\n" if nickname else ""
+    return f"<blockquote>{header}{_html.escape(text)}</blockquote>"
+
+
+def _build_forward_tg_html(nodes, title: str = "合并聊天记录", limit: int = 4096) -> str:
+    """渲染合并转发为 Telegram 白名单 HTML（标题 + 每条 blockquote），总量不超过 limit"""
+    entries = []
+    for node in nodes if isinstance(nodes, list) else [nodes]:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") or {}
+        nickname = str(data.get("nickname") or "").strip()
+        text = _forward_node_text(node).strip()
+        if text:
+            entries.append((nickname, text))
+    if not entries:
+        return ""
+    note = "\n<b>…（已截断）</b>"
+    result = f"<b>{_html.escape(title)}</b>"
+    for nickname, text in entries:
+        block = _tg_forward_quote_block(nickname, text)
+        if len(result) + 1 + len(block) + len(note) <= limit:
+            result = f"{result}\n{block}"
+            continue
+        # 本块放不下：截断正文后收尾
+        budget = limit - len(result) - 1 - len(note)
+        keep = max(0, min(len(text), budget))
+        block = _tg_forward_quote_block(nickname, text[:keep])
+        while keep > 0 and len(result) + 1 + len(block) > limit - len(note):
+            keep = max(0, keep - 16)
+            block = _tg_forward_quote_block(nickname, text[:keep])
+        result = f"{result}\n{block}{note}" if block else f"{result}{note}"
+        break
+    return result
+
 try:
     from ErisPulse.runtime.tasks import spawn_background
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -234,6 +298,35 @@ class TelegramAdapter(BaseAdapter):
                 self._adapter.call_api(_account_id=self.send_context.get("account_id"), endpoint="sendMessage", **params)
             )
 
+        def MergeForward(self, nodes, title: str = "合并聊天记录"):
+            """发送合并转发消息（Telegram HTML 白名单：标题 + 每条 blockquote 引用块）
+
+            :param nodes: go-cqhttp 扩展的 OneBot v11 合并转发节点数组（或单节点 dict）
+            :param title: 标题
+            :return: asyncio.Task
+            """
+            if isinstance(nodes, dict):
+                nodes = [nodes]
+            return asyncio.create_task(
+                self._do_send_merge_forward(
+                    [n for n in nodes if isinstance(n, dict)], title
+                )
+            )
+
+        async def _do_send_merge_forward(self, nodes, title: str = "合并聊天记录"):
+            text = _build_forward_tg_html(nodes, title)
+            if not text:
+                return self._adapter.make_error(
+                    retcode=10006, message="MergeForward: 节点无有效文本内容"
+                )
+            params = {
+                "chat_id": self.send_context["target_id"],
+                "text": self._sanitize_html_for_tg(text),
+                "parse_mode": "HTML",
+            }
+            self._apply_common_params(params)
+            return await self._do_send({"endpoint": "sendMessage", "params": params})
+
         def Edit(self, message_id: int, text: str, content_type: str = None):
             ctx = self.send_context
             params = {"chat_id": ctx["target_id"], "message_id": message_id, "text": text}
@@ -281,6 +374,19 @@ class TelegramAdapter(BaseAdapter):
             )
 
         def Raw_ob12(self, message: list, **kwargs):
+            # node 段解析：纯 node 列表自动路由合并转发；混合列表降级为纯文本
+            if message and all(
+                isinstance(seg, dict) and seg.get("type") == "node" for seg in message
+            ):
+                return asyncio.create_task(
+                    self._do_send_merge_forward([seg for seg in message])
+                )
+            message = [
+                {"type": "text", "data": {"text": _forward_nodes_plain(seg)}}
+                if isinstance(seg, dict) and seg.get("type") == "node"
+                else seg
+                for seg in message
+            ]
 
             async def _send():
                 converted = await self._convert_ob12_to_telegram(message, **kwargs)
