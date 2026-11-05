@@ -1,10 +1,14 @@
 import asyncio
+import base64
 import html as _html
 import io
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Union
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from ErisPulse.Core import client
 from ErisPulse.Core.Bases.adapter import BaseAdapter
@@ -12,6 +16,68 @@ from ErisPulse.Core.Bases import BotAccountConfig
 from ErisPulse.Core.Event import register_event_mixin, unregister_platform_event_methods
 from ErisPulse.Core.i18n import i18n
 from .Converter import TelegramConverter
+
+
+# 常见媒体格式的魔数前缀
+_MEDIA_MAGIC_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
+    b"OggS",
+    b"fLaC",
+    b"ID3",
+    b"RIFF",
+    b"%PDF",
+    b"PK\x03\x04",
+    b"\x1a\x45\xdf\xa3",
+)
+
+
+def _looks_like_media_bytes(data: bytes) -> bool:
+    """按魔数判断 bytes 是否为常见媒体/文件格式"""
+    if any(data.startswith(prefix) for prefix in _MEDIA_MAGIC_PREFIXES):
+        return True
+    if len(data) > 12 and data[4:8] == b"ftyp":
+        return True
+    return len(data) > 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0
+
+
+def _decode_base64_media(value: str) -> Optional[bytes]:
+    """标准 base64 字符串解码为 bytes（解码结果须通过魔数校验）；不满足返回 None"""
+    if not value or value.strip() != value:
+        return None
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except Exception:
+        return None
+    return decoded if _looks_like_media_bytes(decoded) else None
+
+
+def _decode_data_uri(value: str) -> Optional[bytes]:
+    """data: URI 解码为 bytes；格式不合法或解码失败返回 None"""
+    head, sep, payload = value.partition(",")
+    if not sep or not head.startswith("data:"):
+        return None
+    if head.endswith(";base64"):
+        try:
+            return base64.b64decode(payload, validate=True)
+        except Exception:
+            return None
+    return unquote(payload).encode("utf-8")
+
+
+def _file_url_to_path(value: str) -> str:
+    """file:// URL 剥前缀并转换为本地路径；其余字符串原样返回"""
+    if value.startswith("file://"):
+        return url2pathname(urlparse(value).path)
+    return value
+
+
+def _url_basename(url: str) -> Optional[str]:
+    """URL path 末段作为文件名（unquote，天然剥去 query）；为空返回 None"""
+    name = os.path.basename(unquote(urlparse(url).path))
+    return name or None
 
 
 def _forward_node_text(node: Dict) -> str:
@@ -81,7 +147,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.3.0"
+__version__ = "4.3.1"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -210,7 +276,7 @@ class TelegramAdapter(BaseAdapter):
 
         def Voice(self, file, caption: str = ""):
             return self.Raw_ob12(
-                [{"type": "voice", "data": {"file": file, "caption": caption}}]
+                [{"type": "audio", "data": {"file": file, "caption": caption}}]
             )
 
         def Audio(self, file, caption: str = "", content_type: str = None):
@@ -218,15 +284,17 @@ class TelegramAdapter(BaseAdapter):
                 [{"type": "audio", "data": {"file": file, "caption": caption, "content_type": content_type}}]
             )
 
-        def File(self, file, caption: str = ""):
-            return self.Raw_ob12(
-                [{"type": "file", "data": {"file": file, "caption": caption}}]
-            )
+        def File(self, file, caption: str = "", filename=None):
+            data = {"file": file, "caption": caption}
+            if filename:
+                data["filename"] = filename
+            return self.Raw_ob12([{"type": "file", "data": data}])
 
-        def Document(self, file, caption: str = "", content_type: str = None):
-            return self.Raw_ob12(
-                [{"type": "file", "data": {"file": file, "caption": caption, "content_type": content_type}}]
-            )
+        def Document(self, file, caption: str = "", content_type: str = None, filename=None):
+            data = {"file": file, "caption": caption, "content_type": content_type}
+            if filename:
+                data["filename"] = filename
+            return self.Raw_ob12([{"type": "file", "data": data}])
 
         def Sticker(self, file):
             if isinstance(file, bytes):
@@ -391,13 +459,23 @@ class TelegramAdapter(BaseAdapter):
             async def _send():
                 converted = await self._convert_ob12_to_telegram(message, **kwargs)
                 if isinstance(converted, dict):
+                    if "endpoint" not in converted:
+                        self._reset_modifiers()
+                        return converted
                     result = await self._do_send(converted)
                     self._adapter._register_outbound_message(result, self.send_context)
                     return result
                 elif isinstance(converted, list):
                     results = []
                     for call in converted:
-                        results.append(await self._do_send(call))
+                        if "endpoint" not in call:
+                            self._reset_modifiers()
+                            return call
+                        result = await self._do_send(call)
+                        if isinstance(result, dict) and result.get("status") == "failed":
+                            self._reset_modifiers()
+                            return result
+                        results.append(result)
                     self._reset_modifiers()
                     result = results[-1] if results else None
                     self._adapter._register_outbound_message(result, self.send_context)
@@ -603,6 +681,7 @@ class TelegramAdapter(BaseAdapter):
 
             account_id = kwargs.pop("_account_id", None)
             bot_name, bot = self._adapter._resolve_account(account_id)
+            upload_filename = kwargs.pop("_media_filename", None) or f"file.{field_name}"
 
             if "content_type" in kwargs:
                 ct = kwargs.pop("content_type")
@@ -624,7 +703,7 @@ class TelegramAdapter(BaseAdapter):
             url = f"https://api.telegram.org/bot{bot.token}/{endpoint}"
             data = aiohttp.FormData()
             data.add_field(field_name, io.BytesIO(file) if isinstance(file, bytes) else file,
-                           filename=f"file.{field_name}", content_type="application/octet-stream")
+                           filename=upload_filename, content_type="application/octet-stream")
 
             for key, value in kwargs.items():
                 data.add_field(key, json.dumps(value) if isinstance(value, (dict, list)) else str(value))
@@ -638,10 +717,11 @@ class TelegramAdapter(BaseAdapter):
                 self._reset_modifiers()
                 return self._adapter.make_error(message=str(e), raw=None)
 
-        async def _convert_ob12_to_telegram(self, message_segments: list, **kwargs) -> Dict:
+        async def _convert_ob12_to_telegram(self, message_segments: list, **kwargs) -> Union[Dict, List[Dict]]:
             text_parts = []
             entities = []
             media_segment = None
+            extra_media_segments = []
             reply_message_id = None
             parse_mode = None
             rich_text = False
@@ -654,8 +734,10 @@ class TelegramAdapter(BaseAdapter):
                     text_parts.append(data.get("text", ""))
 
                 elif seg_type in ("image", "video", "voice", "file", "audio"):
-                    if not media_segment:
+                    if media_segment is None:
                         media_segment = {"type": seg_type, "data": data}
+                    else:
+                        extra_media_segments.append({"type": seg_type, "data": data})
 
                 elif seg_type == "mention":
                     user_id = data.get("user_id", "")
@@ -701,6 +783,9 @@ class TelegramAdapter(BaseAdapter):
                         for row in rows
                     ]
 
+                else:
+                    self._adapter.logger.warning(f"未处理的消息段类型，已跳过: {seg_type}")
+
             for user_id in self._at_user_ids:
                 self._add_mention_entity(entities, text_parts, user_id, f"@{user_id}")
 
@@ -722,17 +807,35 @@ class TelegramAdapter(BaseAdapter):
             if media_segment and media_segment["type"] == "sticker":
                 sticker_file = media_segment["data"].get("file_id") or media_segment["data"].get("file", b"")
                 if isinstance(sticker_file, bytes):
-                    return {
+                    call = {
                         "endpoint": "sendSticker",
                         "params": {**params, "_field_name": "sticker", "_media_file_data": sticker_file},
                     }
-                params["sticker"] = sticker_file
-                return {"endpoint": "sendSticker", "params": params}
+                else:
+                    params["sticker"] = sticker_file
+                    call = {"endpoint": "sendSticker", "params": params}
+            elif media_segment:
+                call = self._build_media_params(params, media_segment, full_text, parse_mode, rich_text)
+            else:
+                call = self._build_text_params(params, full_text, parse_mode, rich_text, entities)
 
-            if media_segment:
-                return self._build_media_params(params, media_segment, full_text, parse_mode, rich_text)
+            if not extra_media_segments or "endpoint" not in call:
+                return call
 
-            return self._build_text_params(params, full_text, parse_mode, rich_text, entities)
+            extra_calls = []
+            for seg in extra_media_segments:
+                seg_params = {"chat_id": ctx["target_id"]}
+                if final_reply_id:
+                    try:
+                        seg_params["reply_to_message_id"] = int(final_reply_id)
+                    except (ValueError, TypeError):
+                        pass
+                extra_call = self._build_media_params(seg_params, seg, "", None, False)
+                if "endpoint" not in extra_call:
+                    return extra_call
+                extra_calls.append(extra_call)
+
+            return [call, *extra_calls]
 
         def _build_media_params(self, params: dict, media_segment: dict, caption: str, parse_mode: str, rich_text: bool) -> dict:
             seg_type = media_segment["type"]
@@ -752,7 +855,24 @@ class TelegramAdapter(BaseAdapter):
 
             effective_parse = data.get("content_type") or parse_mode
 
+            upload_data = None
+            derived_name = None
+            resolve_error = ""
             if isinstance(media_file, bytes):
+                upload_data = media_file
+            elif isinstance(media_file, str) and media_file:
+                upload_data, derived_name, resolve_error = self._resolve_media_string(media_file, seg_type)
+
+            if resolve_error:
+                return self._adapter.make_error(retcode=10002, message=resolve_error)
+
+            if upload_data is not None:
+                filename = (
+                    data.get("filename")
+                    or data.get("file_name")
+                    or derived_name
+                    or self._default_media_filename(seg_type, upload_data)
+                )
                 if effective_parse:
                     params["parse_mode"] = effective_parse
                     if not rich_text:
@@ -760,7 +880,12 @@ class TelegramAdapter(BaseAdapter):
                 params["caption"] = caption
                 return {
                     "endpoint": endpoint,
-                    "params": {**params, "_field_name": field_name, "_media_file_data": media_file},
+                    "params": {
+                        **params,
+                        "_field_name": field_name,
+                        "_media_file_data": upload_data,
+                        "_media_filename": filename,
+                    },
                 }
 
             params[field_name] = media_file
@@ -770,6 +895,46 @@ class TelegramAdapter(BaseAdapter):
                     caption = self._escape_text_by_parse_mode(caption, effective_parse)
             params["caption"] = caption
             return {"endpoint": endpoint, "params": params}
+
+        @staticmethod
+        def _resolve_media_string(value: str, seg_type: str) -> tuple:
+            """字符串媒体形态分类解析：http(s) 与 file_id 透传；file://、base64/data:、本地路径解析为 bytes。
+
+            返回 (bytes 或 None, 派生文件名或 None, 错误信息)；bytes 为 None 且无错误表示透传。
+            """
+            if value.startswith(("http://", "https://")):
+                return None, _url_basename(value), ""
+            if value.startswith("data:"):
+                decoded = _decode_data_uri(value)
+                if decoded is None:
+                    return None, None, f"媒体段 data: URI 解码失败({seg_type})"
+                return decoded, None, ""
+            decoded = _decode_base64_media(value)
+            if decoded is not None:
+                return decoded, None, ""
+            local = _file_url_to_path(value)
+            if os.path.isfile(local):
+                try:
+                    with open(local, "rb") as f:
+                        return f.read(), os.path.basename(local), ""
+                except OSError as e:
+                    return None, None, f"媒体文件读取失败({seg_type}): {e}"
+            if value.startswith("file://"):
+                return None, None, f"媒体文件不存在({seg_type}): {local}"
+            return None, None, ""
+
+        @staticmethod
+        def _default_media_filename(seg_type: str, data: bytes) -> str:
+            """按段类型与 bytes 魔数生成默认上传文件名（真实扩展名）"""
+            if seg_type == "image":
+                return "image.jpg" if data.startswith(b"\xff\xd8\xff") else "image.png"
+            return {
+                "video": "video.mp4",
+                "voice": "voice.mp3",
+                "audio": "audio.mp3",
+                "file": "file.bin",
+                "sticker": "sticker.webp",
+            }.get(seg_type, "file.bin")
 
         def _build_text_params(self, params: dict, text: str, parse_mode: str, rich_text: bool, entities: list) -> dict:
             text = text or " "
