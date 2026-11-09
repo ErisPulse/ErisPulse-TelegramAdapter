@@ -32,11 +32,11 @@ class TelegramConverter(BaseConverter):
             "edited_message": "message",
             "channel_post": "message",
             "edited_channel_post": "message",
-            "inline_query": "request",
+            "inline_query": "notice",
             "chosen_inline_result": "notice",
             "callback_query": "notice",
-            "shipping_query": "request",
-            "pre_checkout_query": "request",
+            "shipping_query": "notice",
+            "pre_checkout_query": "notice",
             "poll": "notice",
             "poll_answer": "notice",
             "my_chat_member": "notice",
@@ -99,7 +99,7 @@ class TelegramConverter(BaseConverter):
         base_event["id"] = str(update_id)
         base_event["time"] = int(time.time())
         base_event["type"] = "unknown"
-        base_event["self"]["user_id"] = ""
+        base_event["self"]["user_id"] = self.bot_id
         base_event["warning"] = f"Unsupported event type: {unknown_type}"
         base_event["alt_message"] = "This event type is not supported by this system."
         return base_event
@@ -187,6 +187,12 @@ class TelegramConverter(BaseConverter):
             return self._handle_poll_answer(raw_event, base_event)
         elif raw_type == "chosen_inline_result":
             return self._handle_chosen_inline_result(raw_event, base_event)
+        elif raw_type == "inline_query":
+            return self._handle_inline_query(raw_event, base_event)
+        elif raw_type == "shipping_query":
+            return self._handle_shipping_query(raw_event, base_event)
+        elif raw_type == "pre_checkout_query":
+            return self._handle_pre_checkout_query(raw_event, base_event)
         elif raw_type in ["my_chat_member", "chat_member"]:
             return self._handle_chat_member(raw_event, base_event)
 
@@ -196,13 +202,7 @@ class TelegramConverter(BaseConverter):
         """处理请求事件"""
         raw_type = base_event["telegram_raw_type"]
 
-        if raw_type == "inline_query":
-            return self._handle_inline_query(raw_event, base_event)
-        elif raw_type == "shipping_query":
-            return self._handle_shipping_query(raw_event, base_event)
-        elif raw_type == "pre_checkout_query":
-            return self._handle_pre_checkout_query(raw_event, base_event)
-        elif raw_type == "chat_join_request":
+        if raw_type == "chat_join_request":
             return self._handle_chat_join_request(raw_event, base_event)
 
         return base_event
@@ -319,8 +319,6 @@ class TelegramConverter(BaseConverter):
 
         return base_event
 
-    # ==================== 具体 Request 处理器 ====================
-
     def _handle_inline_query(self, raw_event: Dict, base_event: Dict) -> Dict:
         """处理内联查询"""
         query = raw_event["inline_query"]
@@ -370,13 +368,16 @@ class TelegramConverter(BaseConverter):
 
         return base_event
 
+    # ==================== 具体 Request 处理器 ====================
+
     def _handle_chat_join_request(self, raw_event: Dict, base_event: Dict) -> Dict:
         """处理聊天加入请求"""
         request = raw_event["chat_join_request"]
         user = request.get("from", {})
         chat = request.get("chat", {})
 
-        base_event["detail_type"] = "telegram_chat_join_request"
+        base_event["detail_type"] = "group"
+        base_event["sub_type"] = "join"
         base_event["user_id"] = str(user.get("id", ""))
         base_event["user_nickname"] = self._get_user_name(user)
         base_event["comment"] = request.get("invite_link", {}).get("name", "")

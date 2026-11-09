@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Union
 from urllib.parse import unquote, urlparse
@@ -147,10 +148,12 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.3.1"
+__version__ = "4.3.3"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
+
+REQUEST_CTX_TTL = 3600  # 请求上下文留存秒数，过期视同未留存
 
 
 @dataclass
@@ -307,7 +310,8 @@ class TelegramAdapter(BaseAdapter):
                 )
             )
 
-        def Location(self, latitude: float, longitude: float):
+        def Location(self, latitude: float, longitude: float, title: str = "", content: str = ""):
+            # title/content 为标准签名参数，Telegram sendLocation 不支持，保留签名兼容
             ctx = self.send_context
             return asyncio.create_task(
                 self._adapter.call_api(
@@ -354,7 +358,7 @@ class TelegramAdapter(BaseAdapter):
                 self._adapter.call_api(_account_id=self.send_context.get("account_id"), endpoint="sendMessage", **params)
             )
 
-        def Html(self, text: str):
+        def HTML(self, text: str):
             params = {
                 "chat_id": self.send_context["target_id"],
                 "text": self._sanitize_html_for_tg(text),
@@ -365,6 +369,9 @@ class TelegramAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(_account_id=self.send_context.get("account_id"), endpoint="sendMessage", **params)
             )
+
+        # Html 为旧名，保留为 HTML 的别名
+        Html = HTML
 
         def MergeForward(self, nodes, title: str = "合并聊天记录"):
             """发送合并转发消息（Telegram HTML 白名单：标题 + 每条 blockquote 引用块）
@@ -434,8 +441,10 @@ class TelegramAdapter(BaseAdapter):
             )
 
         def AnswerCallback(self, callback_query_id: str, text: str = "", show_alert: bool = False):
+            ctx = self.send_context
             return asyncio.create_task(
                 self._adapter.call_api(
+                    _account_id=ctx.get("account_id"),
                     endpoint="answerCallbackQuery",
                     callback_query_id=callback_query_id, text=text, show_alert=show_alert,
                 )
@@ -488,7 +497,9 @@ class TelegramAdapter(BaseAdapter):
 
             async def _send():
                 endpoint = data.pop("endpoint", "sendMessage")
-                return await self._adapter.call_api(endpoint=endpoint, **data)
+                return await self._adapter.call_api(
+                    _account_id=self.send_context.get("account_id"), endpoint=endpoint, **data
+                )
 
             return asyncio.create_task(_send())
 
@@ -1048,6 +1059,12 @@ class TelegramAdapter(BaseAdapter):
                 chat_id=int(group_id) if str(group_id).lstrip("-").isdigit() else group_id,
             )
 
+        async def get_friend_list(self) -> dict:
+            return self._adapter.make_error(retcode=10002, message="Telegram 不支持获取好友列表")
+
+        async def get_group_list(self) -> dict:
+            return self._adapter.make_error(retcode=10002, message="Telegram 不支持获取群组列表")
+
         async def get_chat_member_count(self, chat_id: str) -> dict:
             """获取聊天成员数（扩展动作）"""
             return await self._adapter.call_api(
@@ -1290,12 +1307,17 @@ class TelegramAdapter(BaseAdapter):
         request_id = str(event.get("request_id", ""))
         if not request_id:
             return
+        now = time.time()
+        for k, c in list(self._pending_requests.items()):
+            if now - c.get("ts", 0) > REQUEST_CTX_TTL:
+                self._pending_requests.pop(k, None)
         self._pending_requests[request_id] = {
             "chat_id": event.get("telegram_chat_id") or event.get("group_id") or event.get("channel_id", ""),
             "user_id": event.get("user_id", ""),
             "account_name": account_name,
+            "ts": now,
         }
-        while len(self._pending_requests) > 500:
+        while len(self._pending_requests) > 512:
             self._pending_requests.pop(next(iter(self._pending_requests)), None)
 
     async def _handle_chat_join_request(
@@ -1307,16 +1329,23 @@ class TelegramAdapter(BaseAdapter):
         ctx = self._pending_requests.get(request_id)
         if not ctx:
             return self.make_error(retcode=34001, message=f"请求 {request_id} 不存在或已过期")
+        if time.time() - ctx.get("ts", 0) > REQUEST_CTX_TTL:
+            self._pending_requests.pop(request_id, None)
+            self.logger.warning(f"请求 {request_id} 上下文已过期，视同未留存")
+            return self.make_error(retcode=34001, message=f"请求 {request_id} 不存在或已过期")
         chat_id = ctx.get("chat_id", "")
         user_id = ctx.get("user_id", "")
         if not chat_id or not user_id:
             return self.make_error(retcode=34003, message="请求上下文缺少 chat_id/user_id")
         endpoint = "approveChatJoinRequest" if approve else "declineChatJoinRequest"
-        return await self.call_api(
+        result = await self.call_api(
             endpoint, _account_id=account_id or ctx.get("account_name"),
             chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
             user_id=int(user_id) if str(user_id).isdigit() else user_id,
         )
+        if result.get("status") == "ok":
+            self._pending_requests.pop(request_id, None)
+        return result
 
     async def _ad_delete_message(self, message_id: str, account_id: Optional[str] = None) -> dict:
         """按消息登记表撤回消息（deleteMessage 需要 chat_id + message_id）"""
@@ -1332,7 +1361,7 @@ class TelegramAdapter(BaseAdapter):
     def _format_telegram_response(self, raw_response: dict) -> dict:
         if not isinstance(raw_response, dict):
             return self.make_error(
-                retcode=34000,
+                retcode=34100,
                 message=i18n.t("telegram.api_unexpected_format", type=type(raw_response), default="API 返回了意外格式: {type}"),
                 raw=raw_response,
             )
@@ -1343,7 +1372,7 @@ class TelegramAdapter(BaseAdapter):
 
         resp = self.make_response(
             status="ok" if is_ok else "failed",
-            retcode=0 if is_ok else 34000,
+            retcode=0 if is_ok else 34100,
             data=result,
             message_id=message_id,
             message="" if is_ok else raw_response.get("description", "Unknown error"),
@@ -1353,7 +1382,9 @@ class TelegramAdapter(BaseAdapter):
         return resp
 
     async def call_api(self, endpoint: str, _account_id: str = None, **params):
-        account_name, account = self._resolve_account(_account_id)
+                # 标准字段 account_id 与旧名 _account_id 双兼容（ApiDSL.Using 传标准名）
+        account_id = params.pop("account_id", None) or _account_id
+        account_name, account = self._resolve_account(account_id)
         url = f"https://api.telegram.org/bot{account.token}/{endpoint}"
         echo = params.pop("echo", None)
 
@@ -1366,7 +1397,7 @@ class TelegramAdapter(BaseAdapter):
 
             if not isinstance(raw_response, dict):
                 error_resp = self.make_error(
-                    retcode=34000,
+                    retcode=34100,
                     message=i18n.t("telegram.api_unexpected_format", type=type(raw_response), default="API 返回了意外格式: {type}"),
                     raw=raw_response,
                 )
@@ -1420,6 +1451,7 @@ class TelegramAdapter(BaseAdapter):
                                 self._store_event_msg_id(onebot_event)
                             elif onebot_event.get("type") == "request":
                                 self._register_request(onebot_event, account_name)
+                            onebot_event["self"]["account_id"] = account_name
                             from ErisPulse.Core import adapter as adapter_mgr
                             await adapter_mgr.emit(onebot_event)
                 await asyncio.sleep(1)
